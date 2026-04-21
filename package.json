@@ -1,0 +1,19 @@
+{
+  "name": "annotate",
+  "version": "1.0.0",
+  "description": "Push-to-talk voice transcription",
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "set PATH=F:\\.cargo\\bin;%PATH%&& set RUSTUP_HOME=F:\\.rustup&& set CARGO_HOME=F:\\.cargo&& tauri dev",
+    "build": "set PATH=F:\\.cargo\\bin;%PATH%&& set RUSTUP_HOME=F:\\.rustup&& set CARGO_HOME=F:\\.cargo&& tauri build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@tauri-apps/api": "^2.10.1",
+    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/plugin-global-shortcut": "^2.3.1",
+    "@tauri-apps/plugin-store": "^2.4.2"
+  }
+}

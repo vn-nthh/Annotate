@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Annotate",
+  "windows": [
+    "main",
+    "throbber"
+  ],
+  "permissions": [
+    "core:default",
+    "global-shortcut:default",
+    "store:default",
+    "core:event:default"
+  ]
+}
