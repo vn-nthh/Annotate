@@ -543,14 +543,15 @@ function startMediaRecording() {
         source.connect(rmsAnalyserNode);
 
         const buf = new Float32Array(rmsAnalyserNode.fftSize);
-        const trackRms = () => {
-          if (!rmsAnalyserNode) return;
+        // Use setInterval instead of requestAnimationFrame —
+        // rAF stops firing when the window is hidden (hide-to-tray),
+        // leaving recordingPeakRms at 0 and blocking all audio.
+        const rmsInterval = setInterval(() => {
+          if (!rmsAnalyserNode) { clearInterval(rmsInterval); return; }
           rmsAnalyserNode.getFloatTimeDomainData(buf);
           const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
           if (rms > recordingPeakRms) recordingPeakRms = rms;
-          requestAnimationFrame(trackRms);
-        };
-        requestAnimationFrame(trackRms);
+        }, 50);
       } catch (e) {
         console.warn('RMS analyser unavailable:', e);
       }
