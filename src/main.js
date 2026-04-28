@@ -515,6 +515,14 @@ function stopWebSpeech() {
 }
 
 // ── MediaRecorder / Groq Mode ──────────────────────────
+// Tracks peak RMS during recording — shared by cloud & local pipelines.
+let recordingPeakRms = 0;
+let rmsAnalyserNode = null;
+let rmsAudioCtx = null;
+
+// ~-40 dBFS — matches the local whisper-worker threshold
+const RMS_SILENCE_THRESHOLD = 0.01;
+
 function startMediaRecording() {
   // Stop any leftover stream from a previous cycle
   if (mediaRecorder && mediaRecorder.stream) {
@@ -522,9 +530,31 @@ function startMediaRecording() {
   }
   mediaRecorder = null;
   audioChunks = [];
+  recordingPeakRms = 0;
 
   navigator.mediaDevices.getUserMedia({ audio: true })
     .then(stream => {
+      // Set up Web Audio analyser to track RMS energy during recording
+      try {
+        rmsAudioCtx = new AudioContext();
+        const source = rmsAudioCtx.createMediaStreamSource(stream);
+        rmsAnalyserNode = rmsAudioCtx.createAnalyser();
+        rmsAnalyserNode.fftSize = 256;
+        source.connect(rmsAnalyserNode);
+
+        const buf = new Float32Array(rmsAnalyserNode.fftSize);
+        const trackRms = () => {
+          if (!rmsAnalyserNode) return;
+          rmsAnalyserNode.getFloatTimeDomainData(buf);
+          const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
+          if (rms > recordingPeakRms) recordingPeakRms = rms;
+          requestAnimationFrame(trackRms);
+        };
+        requestAnimationFrame(trackRms);
+      } catch (e) {
+        console.warn('RMS analyser unavailable:', e);
+      }
+
       mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
 
       mediaRecorder.ondataavailable = (e) => {
@@ -542,6 +572,14 @@ function startMediaRecording() {
     });
 }
 
+function stopRmsAnalyser() {
+  rmsAnalyserNode = null;
+  if (rmsAudioCtx) {
+    rmsAudioCtx.close().catch(() => {});
+    rmsAudioCtx = null;
+  }
+}
+
 async function stopMediaRecording() {
   if (!mediaRecorder || mediaRecorder.state === 'inactive') {
     setStatus('No recording', false);
@@ -554,6 +592,18 @@ async function stopMediaRecording() {
 
       if (audioChunks.length === 0) {
         setStatus('No audio', false);
+        mediaRecorder = null;
+        resolve();
+        return;
+      }
+
+      stopRmsAnalyser();
+
+      // RMS energy gate — skip transcription if audio was near-silent.
+      // Applies to both cloud and local pipelines consistently.
+      if (recordingPeakRms < RMS_SILENCE_THRESHOLD) {
+        console.debug(`[RMS] Skipping — peak RMS ${recordingPeakRms.toFixed(5)} below threshold`);
+        setStatus('No speech', false);
         mediaRecorder = null;
         resolve();
         return;
