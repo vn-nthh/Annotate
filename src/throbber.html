@@ -56,13 +56,29 @@
       document.getElementById('d3'),
     ];
 
-    let audioCtx, analyser, dataArray, stream;
-    let animId;
+    let audioCtx = null;
+    let analyser = null;
+    let dataArray = null;
+    let stream = null;
+    let animId = null;
     // Phase offsets for each dot so they move in a wave
     const offsets = [0, 0.8, 1.6, 2.4];
 
+    // Tear down the current audio pipeline fully
+    function stopAudio() {
+      if (animId) { cancelAnimationFrame(animId); animId = null; }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+      analyser = null;
+      dataArray = null;
+    }
+
+    // Acquire a FRESH stream (picks up current process default device)
     async function startListening() {
+      stopAudio(); // always clean up first
       try {
+        // No deviceId — deliberately asks for the process default,
+        // which is managed by Windows audio policy in the Rust backend
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         audioCtx = new AudioContext();
         const source = audioCtx.createMediaStreamSource(stream);
@@ -119,7 +135,22 @@
       animId = requestAnimationFrame(animateIdle);
     }
 
-    startListening();
+    // Re-acquire the stream every time the window is made visible.
+    // This is the key fix: since device switching happens via Windows audio
+    // policy (not getUserMedia deviceId), we must call getUserMedia() fresh
+    // each time to pick up the current process default device.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        startListening();
+      } else {
+        stopAudio();
+      }
+    });
+
+    // Initial acquire in case the window is already visible when loaded
+    if (document.visibilityState === 'visible') {
+      startListening();
+    }
   </script>
 </body>
 </html>

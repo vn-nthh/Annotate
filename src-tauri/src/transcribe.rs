@@ -77,18 +77,24 @@ pub async fn transcribe_with_groq(
 
     let result: VerboseResponse = response.json().await?;
 
-    // Filter segments using standard Whisper anti-hallucination heuristics
+    // Filter segments using official Whisper anti-hallucination logic
+    // (see openai/whisper transcribe.py lines 304-316)
     let text = match result.segments {
         Some(segments) => {
             let filtered: Vec<&str> = segments
                 .iter()
                 .filter(|seg| {
-                    let dominated_by_silence = seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD
-                        && seg.avg_logprob < AVG_LOGPROB_THRESHOLD;
-                    let low_confidence = seg.avg_logprob < AVG_LOGPROB_THRESHOLD;
-                    let repetitive = seg.compression_ratio > COMPRESSION_RATIO_THRESHOLD;
+                    // Skip if no_speech_prob > threshold, unless logprob is high enough
+                    let mut should_skip = seg.no_speech_prob > NO_SPEECH_PROB_THRESHOLD;
+                    if seg.avg_logprob > AVG_LOGPROB_THRESHOLD {
+                        should_skip = false; // confident speech overrides
+                    }
+                    // Skip if too repetitive (hallucination loops)
+                    if seg.compression_ratio > COMPRESSION_RATIO_THRESHOLD {
+                        should_skip = true;
+                    }
 
-                    if dominated_by_silence || (low_confidence && repetitive) {
+                    if should_skip {
                         log::debug!(
                             "Dropping hallucinated segment: {:?} \
                              (no_speech={:.3}, logprob={:.3}, compression={:.3})",

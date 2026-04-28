@@ -1,7 +1,11 @@
 mod audio;
 mod transcribe;
+mod whisper_local;
+mod google_auth;
+mod gec;
 
 use audio::{enumerate_capture_devices, apply_device_override};
+use base64::Engine;
 use enigo::{Enigo, Keyboard, Settings};
 use serde::Serialize;
 use std::sync::{LazyLock, Mutex};
@@ -38,6 +42,207 @@ async fn transcribe_audio(audio_base64: String, api_key: String, initial_prompt:
     transcribe::transcribe_with_groq(&audio_base64, &api_key, initial_prompt.as_deref())
         .await
         .map_err(|e| format!("Transcription failed: {}", e))
+}
+
+// ── API Key — Windows Credential Manager ─────────────
+
+const CREDENTIAL_SERVICE: &str = "Annotate";
+const CREDENTIAL_USER: &str = "GroqApiKey";
+
+/// Save the Groq API key to Windows Credential Manager.
+/// The key is never written to disk in plaintext.
+#[tauri::command]
+fn save_api_key(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    entry.set_password(&key)
+        .map_err(|e| format!("Failed to save credential: {}", e))
+}
+
+/// Load the Groq API key from Windows Credential Manager.
+/// Returns None if no key has been saved yet.
+#[tauri::command]
+fn load_api_key() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Failed to load credential: {}", e)),
+    }
+}
+
+// ── Local Whisper Commands ─────────────────────────────
+
+/// Check if the whisper model file exists on disk
+#[tauri::command]
+fn check_whisper_model(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(whisper_local::is_model_downloaded(&data_dir))
+}
+
+/// Get the model file path (for display in the UI)
+#[tauri::command]
+fn get_whisper_model_path(app: AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(whisper_local::model_path(&data_dir).to_string_lossy().to_string())
+}
+
+/// Download the whisper model file, emitting progress events
+#[tauri::command]
+async fn download_whisper_model(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    whisper_local::download_model(&data_dir, move |downloaded, total| {
+        let _ = app_handle.emit("whisper-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("Download failed: {}", e))?;
+    Ok(())
+}
+
+/// Load the whisper model — spawns worker process and loads model
+#[tauri::command]
+async fn load_whisper_model(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    whisper_local::ensure_loaded(&data_dir).await
+}
+
+/// Unload the whisper model — kills worker process, freeing all CUDA memory
+#[tauri::command]
+async fn unload_whisper_model() -> Result<(), String> {
+    whisper_local::unload().await;
+    Ok(())
+}
+
+/// Transcribe audio locally via the worker process
+#[tauri::command]
+async fn transcribe_audio_local(
+    audio_base64: String,
+    initial_prompt: Option<String>,
+) -> Result<String, String> {
+    whisper_local::transcribe_pcm_b64(&audio_base64, initial_prompt.as_deref()).await
+}
+
+// ── GEC (Grammar Correction) Commands ──────────────────
+
+/// Check if the GEC model files exist on disk
+#[tauri::command]
+fn check_gec_model(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(gec::is_model_downloaded(&data_dir))
+}
+
+/// Download the GEC model bundle, emitting progress events
+#[tauri::command]
+async fn download_gec_model(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    gec::download_model(&data_dir, move |downloaded, total| {
+        let _ = app_handle.emit("gec-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("GEC download failed: {}", e))?;
+    Ok(())
+}
+
+/// Load the GEC model into memory
+#[tauri::command]
+async fn load_gec_model(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || gec::ensure_loaded(&data_dir))
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+}
+
+/// Correct grammar in the given text
+#[tauri::command]
+async fn correct_grammar(text: String) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || gec::correct_text(&text))
+        .await
+        .map_err(|e| format!("Join error: {}", e))?
+}
+
+/// Unload the GEC model from memory
+#[tauri::command]
+async fn unload_gec_model() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| {
+        gec::unload();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Join error: {}", e))?
+}
+
+// ── CUDA Runtime Commands ──────────────────────────────
+
+/// Check if CUDA runtime DLLs are available.
+/// Returns: { available: bool, missing: ["name.dll", ...], has_toolkit: bool }
+#[tauri::command]
+fn check_cuda_runtime() -> Result<serde_json::Value, String> {
+    let missing = whisper_local::missing_cuda_dlls();
+    let available = missing.is_empty();
+    let has_toolkit = std::env::var("CUDA_PATH").is_ok();
+
+    // If DLLs are missing but toolkit is installed, try copying automatically
+    if !available && has_toolkit {
+        match whisper_local::copy_cuda_from_toolkit() {
+            Ok(count) => {
+                log::info!("[CUDA] Copied {} DLLs from toolkit", count);
+                let still_missing = whisper_local::missing_cuda_dlls();
+                return Ok(serde_json::json!({
+                    "available": still_missing.is_empty(),
+                    "missing": still_missing,
+                    "has_toolkit": true,
+                    "copied_from_toolkit": count
+                }));
+            }
+            Err(e) => {
+                log::warn!("[CUDA] Could not copy from toolkit: {}", e);
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "available": available,
+        "missing": missing,
+        "has_toolkit": has_toolkit
+    }))
+}
+
+/// Download CUDA runtime DLLs from NVIDIA's redistribution CDN
+#[tauri::command]
+async fn download_cuda_runtime(app: AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    whisper_local::download_cuda_runtime(move |downloaded, total| {
+        let _ = app_handle.emit("cuda-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("CUDA download failed: {}", e))?;
+    Ok(())
 }
 
 /// Paste text by writing to clipboard and simulating Ctrl+V
@@ -209,6 +414,23 @@ pub fn run() {
             hide_throbber,
             hide_to_tray,
             quit_app,
+            save_api_key,
+            load_api_key,
+            check_whisper_model,
+            get_whisper_model_path,
+            download_whisper_model,
+            load_whisper_model,
+            transcribe_audio_local,
+            check_cuda_runtime,
+            download_cuda_runtime,
+            google_auth::google_oauth,
+            google_auth::cancel_google_oauth,
+            check_gec_model,
+            download_gec_model,
+            load_gec_model,
+            unload_gec_model,
+            correct_grammar,
+            unload_whisper_model,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

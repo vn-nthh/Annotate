@@ -3,6 +3,8 @@ const { listen } = window.__TAURI__.event;
 const { load } = window.__TAURI__.store;
 const { getCurrentWindow } = window.__TAURI__.window;
 
+import * as sync from './gdrive-sync.js';
+
 // ── State ──────────────────────────────────────────────
 let store = null;
 let isRecording = false;
@@ -29,6 +31,32 @@ const dictList = document.getElementById('dict-list');
 const dictCount = document.getElementById('dict-count');
 const themeToggle = document.getElementById('theme-toggle');
 
+// Local whisper elements
+const sectionLocalWhisper = document.getElementById('section-local-whisper');
+const whisperStatusText = document.getElementById('whisper-status-text');
+const whisperDownloadBtn = document.getElementById('whisper-download-btn');
+const whisperLoadBtn = document.getElementById('whisper-load-btn');
+const whisperProgressWrap = document.getElementById('whisper-progress-wrap');
+const whisperProgressFill = document.getElementById('whisper-progress-fill');
+const whisperProgressText = document.getElementById('whisper-progress-text');
+
+// CUDA runtime elements
+const cudaStatusText = document.getElementById('cuda-status-text');
+const cudaDownloadBtn = document.getElementById('cuda-download-btn');
+const cudaProgressWrap = document.getElementById('cuda-progress-wrap');
+const cudaProgressFill = document.getElementById('cuda-progress-fill');
+const cudaProgressText = document.getElementById('cuda-progress-text');
+
+// GEC (grammar correction) elements
+const grammarToggle = document.getElementById('grammar-toggle');
+const gecModelSection = document.getElementById('gec-model-section');
+const gecStatusText = document.getElementById('gec-status-text');
+const gecDownloadBtn = document.getElementById('gec-download-btn');
+const gecProgressWrap = document.getElementById('gec-progress-wrap');
+const gecProgressFill = document.getElementById('gec-progress-fill');
+const gecProgressText = document.getElementById('gec-progress-text');
+let gecModelLoaded = false;
+
 // Tab navigation
 const tabBtns = document.querySelectorAll('.tab-btn');
 const tabPanels = document.querySelectorAll('.tab-panel');
@@ -45,6 +73,8 @@ async function init() {
   await setupHotkeyListener();
   renderHistory();
   renderDictionary();
+  await initSyncUI();
+  await initGrammarUI();
 }
 
 // ── Tab Navigation ─────────────────────────────────────
@@ -100,7 +130,7 @@ async function loadSavedSettings() {
   }
   toggleApiKeyVisibility(modeSelect.value);
 
-  const savedKey = await store.get('groqApiKey');
+  const savedKey = await invoke('load_api_key').catch(() => null);
   if (savedKey) {
     apikeyInput.value = savedKey;
   }
@@ -190,9 +220,9 @@ function setupEventListeners() {
     toggleApiKeyVisibility(mode);
   });
 
-  // API key
+  // API key — saved to Windows Credential Manager (never plaintext on disk)
   apikeyInput.addEventListener('change', async () => {
-    await store.set('groqApiKey', apikeyInput.value);
+    await invoke('save_api_key', { key: apikeyInput.value }).catch(console.error);
     setStatus('Key saved', false);
   });
 
@@ -223,10 +253,46 @@ function setupEventListeners() {
   });
 }
 
-// ── API Key Section Toggle ─────────────────────────────
-function toggleApiKeyVisibility(mode) {
-  const show = mode === 'groq';
-  apikeySection.style.display = show ? '' : 'none';
+// ── API Key / Local Whisper Section Toggle ─────────────
+async function toggleApiKeyVisibility(mode) {
+  apikeySection.style.display = mode === 'groq' ? '' : 'none';
+  sectionLocalWhisper.style.display = mode === 'local' ? '' : 'none';
+
+  if (mode === 'local') {
+    // Show spinner immediately while we check / load
+    whisperStatusText.innerHTML = '<span class="spinner-inline"></span> Checking model\u2026';
+    whisperDownloadBtn.style.display = 'none';
+    whisperLoadBtn.style.display = 'none';
+
+    checkCudaRuntimeStatus();
+    // Auto-load if downloaded, otherwise just show status
+    await autoLoadWhisperIfReady();
+    // Refresh status after load attempt
+    await checkWhisperModelStatus();
+  } else {
+    // Unload whisper model when switching away from local mode
+    if (whisperModelLoaded) {
+      invoke('unload_whisper_model').then(() => {
+        whisperModelLoaded = false;
+        console.log('[Whisper] Model unloaded (switched away from local mode)');
+      }).catch(err => console.warn('[Whisper] Unload failed:', err));
+    }
+  }
+}
+
+/**
+ * Auto-load the whisper model on startup if it's downloaded but not loaded.
+ */
+async function autoLoadWhisperIfReady() {
+  if (whisperModelLoaded) return;
+  try {
+    const downloaded = await invoke('check_whisper_model');
+    if (downloaded) {
+      await loadWhisperModel();
+    }
+  } catch (err) {
+    console.warn('[AutoLoad] Could not auto-load whisper model:', err);
+  }
 }
 
 // ── Hotkey Recording ───────────────────────────────────
@@ -325,6 +391,15 @@ async function setupHotkeyListener() {
         setStatus('Speech failed', true);
         try { await invoke('hide_throbber'); } catch {}
       }
+    } else if (mode === 'local') {
+      try {
+        startWavRecording();
+      } catch (err) {
+        console.error('WAV recording start failed:', err);
+        isRecording = false;
+        setStatus('Mic failed', true);
+        try { await invoke('hide_throbber'); } catch {}
+      }
     } else {
       try {
         startMediaRecording();
@@ -352,6 +427,8 @@ async function setupHotkeyListener() {
 
     if (mode === 'webspeech') {
       stopWebSpeech();
+    } else if (mode === 'local') {
+      await stopWavRecording();
     } else {
       await stopMediaRecording();
     }
@@ -411,8 +488,9 @@ function startWebSpeech() {
     if (text) {
       setStatus('Pasting…', false);
       try {
-        await invoke('paste_text', { text });
-        addHistoryEntry(text);
+        const finalText = await maybeCorrectGrammar(text);
+        await invoke('paste_text', { text: finalText });
+        addHistoryEntry(finalText);
         setStatus('Done', false);
       } catch (err) {
         console.error('Paste failed:', err);
@@ -512,9 +590,11 @@ async function stopMediaRecording() {
         });
 
         if (text && text.trim()) {
+          let finalText = text.trim();
+          finalText = await maybeCorrectGrammar(finalText);
           setStatus('Pasting…', false);
-          await invoke('paste_text', { text: text.trim() });
-          addHistoryEntry(text.trim());
+          await invoke('paste_text', { text: finalText });
+          addHistoryEntry(finalText);
           setStatus('Done', false);
         } else {
           setStatus('No speech', false);
@@ -532,19 +612,38 @@ async function stopMediaRecording() {
   });
 }
 
-// ── Dictionary ─────────────────────────────────────────
+// ── Dictionary (tombstone-aware) ───────────────────────
+// Storage format: { terms: string[], deleted: string[] }
+// Tombstones (deleted[]) ensure deletions propagate across synced devices.
 const DICT_KEY = 'annotate_dictionary';
 
-function getDictionary() {
+/**
+ * Read the full dictionary store from localStorage.
+ * Auto-migrates from the old string[] format.
+ */
+function getDictStore() {
   try {
-    return JSON.parse(localStorage.getItem(DICT_KEY) || '[]');
+    const raw = JSON.parse(localStorage.getItem(DICT_KEY) || '{"terms":[],"deleted":[]}');
+    // Migrate from old string[] format
+    if (Array.isArray(raw)) {
+      return { terms: raw, deleted: [] };
+    }
+    return {
+      terms: Array.isArray(raw.terms) ? raw.terms : [],
+      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
+    };
   } catch {
-    return [];
+    return { terms: [], deleted: [] };
   }
 }
 
-function saveDictionary(terms) {
-  localStorage.setItem(DICT_KEY, JSON.stringify(terms));
+function saveDictStore(store) {
+  localStorage.setItem(DICT_KEY, JSON.stringify(store));
+}
+
+/** Convenience: just the terms (for prompt building, rendering, etc.) */
+function getDictionary() {
+  return getDictStore().terms;
 }
 
 function getDictionaryPrompt() {
@@ -557,24 +656,42 @@ function addDictTerm() {
   const term = dictInput.value.trim();
   if (!term) return;
 
-  const terms = getDictionary();
+  const store = getDictStore();
+  const key = term.toLowerCase();
+
   // Avoid duplicates
-  if (terms.some(t => t.toLowerCase() === term.toLowerCase())) {
+  if (store.terms.some(t => t.toLowerCase() === key)) {
     dictInput.value = '';
     return;
   }
 
-  terms.push(term);
-  saveDictionary(terms);
+  store.terms.push(term);
+  store.terms.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+
+  // Lift tombstone if re-adding a previously deleted term
+  store.deleted = store.deleted.filter(t => t.toLowerCase() !== key);
+
+  saveDictStore(store);
   dictInput.value = '';
   renderDictionary();
+  sync.scheduleSyncAfterChange();
 }
 
 function removeDictTerm(index) {
-  const terms = getDictionary();
-  terms.splice(index, 1);
-  saveDictionary(terms);
+  const store = getDictStore();
+  const removed = store.terms.splice(index, 1)[0];
+
+  if (removed) {
+    const key = removed.toLowerCase();
+    // Add to tombstone list (avoid duplicate tombstones)
+    if (!store.deleted.some(t => t.toLowerCase() === key)) {
+      store.deleted.push(removed);
+    }
+  }
+
+  saveDictStore(store);
   renderDictionary();
+  sync.scheduleSyncAfterChange();
 }
 
 function renderDictionary() {
@@ -648,6 +765,7 @@ function addHistoryEntry(text) {
   if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
   localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
   renderHistory();
+  sync.scheduleSyncAfterChange();
 }
 
 function renderHistory() {
@@ -720,6 +838,607 @@ async function setTheme(theme) {
   setTimeout(() => {
     document.documentElement.classList.remove('theme-transitioning');
   }, 450);
+}
+
+// ── Local Whisper Model Management ─────────────────────
+let whisperModelLoaded = false;
+
+async function checkWhisperModelStatus() {
+  try {
+    const downloaded = await invoke('check_whisper_model');
+    if (downloaded) {
+      if (whisperModelLoaded) {
+        whisperStatusText.textContent = '\u2713 Model ready';
+        whisperStatusText.classList.add('ready');
+        whisperDownloadBtn.style.display = 'none';
+        whisperLoadBtn.style.display = 'none';
+      } else {
+        whisperStatusText.textContent = 'Model downloaded \u2014 needs loading';
+        whisperStatusText.classList.remove('ready');
+        whisperDownloadBtn.style.display = 'none';
+        whisperLoadBtn.style.display = '';
+      }
+    } else {
+      whisperStatusText.textContent = 'Model not downloaded (~600 MB)';
+      whisperStatusText.classList.remove('ready');
+      whisperDownloadBtn.style.display = '';
+      whisperLoadBtn.style.display = 'none';
+    }
+  } catch (err) {
+    console.error('Check whisper model failed:', err);
+    whisperStatusText.textContent = '\u2717 Error checking model';
+  }
+}
+
+async function downloadWhisperModel() {
+  whisperDownloadBtn.style.display = 'none';
+  whisperProgressWrap.style.display = '';
+  whisperStatusText.textContent = 'Downloading model…';
+
+  // Listen for progress events
+  const unlisten = await listen('whisper-download-progress', (event) => {
+    const [downloaded, total] = event.payload;
+    if (total > 0) {
+      const pct = Math.round((downloaded / total) * 100);
+      whisperProgressFill.style.width = pct + '%';
+      whisperProgressText.textContent = pct + '%';
+    } else {
+      const mb = (downloaded / 1048576).toFixed(1);
+      whisperProgressText.textContent = mb + ' MB';
+    }
+  });
+
+  try {
+    await invoke('download_whisper_model');
+    whisperStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model\u2026';
+    whisperProgressWrap.style.display = 'none';
+    unlisten();
+    await loadWhisperModel();
+  } catch (err) {
+    console.error('Download failed:', err);
+    whisperStatusText.textContent = '\u2717 Download failed';
+    whisperDownloadBtn.style.display = '';
+    whisperProgressWrap.style.display = 'none';
+    unlisten();
+  }
+}
+
+async function loadWhisperModel() {
+  whisperLoadBtn.style.display = 'none';
+  whisperStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model into memory…';
+  whisperStatusText.classList.remove('ready');
+
+  try {
+    await invoke('load_whisper_model');
+    whisperModelLoaded = true;
+    whisperStatusText.textContent = '\u2713 Model ready';
+    whisperStatusText.classList.add('ready');
+    setStatus('Whisper ready', false);
+  } catch (err) {
+    console.error('Load failed:', err);
+    whisperStatusText.textContent = '\u2717 Load failed';
+    whisperLoadBtn.style.display = '';
+  }
+}
+
+// ── CUDA Runtime Management ────────────────────────────
+let cudaRuntimeReady = false;
+
+async function checkCudaRuntimeStatus() {
+  try {
+    const result = await invoke('check_cuda_runtime');
+    if (result.available) {
+      cudaRuntimeReady = true;
+      cudaStatusText.textContent = 'CUDA runtime ready';
+      cudaStatusText.classList.add('ready');
+      cudaDownloadBtn.style.display = 'none';
+    } else if (result.copied_from_toolkit > 0 && result.available) {
+      cudaRuntimeReady = true;
+      cudaStatusText.textContent = 'CUDA runtime copied from toolkit';
+      cudaStatusText.classList.add('ready');
+      cudaDownloadBtn.style.display = 'none';
+    } else {
+      cudaRuntimeReady = false;
+      cudaStatusText.classList.remove('ready');
+      const missingList = result.missing.join(', ');
+      if (result.has_toolkit) {
+        cudaStatusText.textContent = `Missing DLLs (toolkit copy failed): ${missingList}`;
+      } else {
+        cudaStatusText.textContent = `Missing: ${missingList} (~350 MB download)`;
+      }
+      cudaDownloadBtn.style.display = '';
+    }
+  } catch (err) {
+    console.error('CUDA check failed:', err);
+    cudaStatusText.textContent = 'Error checking CUDA runtime';
+  }
+}
+
+async function downloadCudaRuntime() {
+  cudaDownloadBtn.style.display = 'none';
+  cudaProgressWrap.style.display = '';
+  cudaStatusText.textContent = 'Downloading CUDA runtime from NVIDIA…';
+
+  const unlisten = await listen('cuda-download-progress', (event) => {
+    const [downloaded, total] = event.payload;
+    if (total > 0) {
+      const pct = Math.round((downloaded / total) * 100);
+      cudaProgressFill.style.width = pct + '%';
+      cudaProgressText.textContent = pct + '%';
+    } else {
+      const mb = (downloaded / 1048576).toFixed(1);
+      cudaProgressText.textContent = mb + ' MB';
+    }
+  });
+
+  try {
+    await invoke('download_cuda_runtime');
+    cudaRuntimeReady = true;
+    cudaStatusText.textContent = 'CUDA runtime ready';
+    cudaStatusText.classList.add('ready');
+    cudaProgressWrap.style.display = 'none';
+    cudaDownloadBtn.style.display = 'none';
+    unlisten();
+  } catch (err) {
+    console.error('CUDA download failed:', err);
+    cudaStatusText.textContent = 'Download failed: ' + err;
+    cudaDownloadBtn.style.display = '';
+    cudaProgressWrap.style.display = 'none';
+    unlisten();
+  }
+}
+
+// Wire up model and CUDA buttons
+document.addEventListener('DOMContentLoaded', () => {
+  whisperDownloadBtn.addEventListener('click', downloadWhisperModel);
+  whisperLoadBtn.addEventListener('click', loadWhisperModel);
+  cudaDownloadBtn.addEventListener('click', downloadCudaRuntime);
+});
+
+// ── WAV Recording (for Local Whisper) ──────────────────
+// Records raw PCM audio and encodes it as a 16kHz mono 16-bit WAV
+let wavAudioContext = null;
+let wavStream = null;
+let wavScriptNode = null;
+let wavSourceNode = null;
+let wavBuffers = [];
+
+function startWavRecording() {
+  // Clean up any previous recording
+  cleanupWavRecording();
+  wavBuffers = [];
+
+  navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } })
+    .then(stream => {
+      wavStream = stream;
+      wavAudioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      wavSourceNode = wavAudioContext.createMediaStreamSource(stream);
+
+      // ScriptProcessor to capture raw PCM
+      const bufferSize = 4096;
+      wavScriptNode = wavAudioContext.createScriptProcessor(bufferSize, 1, 1);
+      wavScriptNode.onaudioprocess = (e) => {
+        const data = e.inputBuffer.getChannelData(0);
+        wavBuffers.push(new Float32Array(data));
+      };
+
+      wavSourceNode.connect(wavScriptNode);
+      wavScriptNode.connect(wavAudioContext.destination);
+    })
+    .catch(err => {
+      console.error('WAV recording failed:', err);
+      setStatus('Mic denied', true);
+      isRecording = false;
+    });
+}
+
+async function stopWavRecording() {
+  if (!wavAudioContext || wavBuffers.length === 0) {
+    cleanupWavRecording();
+    setStatus('No audio', false);
+    return;
+  }
+
+  // Stop recording
+  if (wavScriptNode) {
+    wavScriptNode.disconnect();
+    wavScriptNode.onaudioprocess = null;
+  }
+  if (wavSourceNode) wavSourceNode.disconnect();
+  if (wavStream) wavStream.getTracks().forEach(t => t.stop());
+
+  setStatus('Transcribing…', false, true);
+
+  // Merge all buffers
+  const totalLength = wavBuffers.reduce((sum, b) => sum + b.length, 0);
+  const merged = new Float32Array(totalLength);
+  let offset = 0;
+  for (const buf of wavBuffers) {
+    merged.set(buf, offset);
+    offset += buf.length;
+  }
+
+  // Encode as 16-bit PCM WAV
+  const sampleRate = wavAudioContext ? wavAudioContext.sampleRate : 16000;
+  const wavBytes = encodeWav(merged, sampleRate);
+
+  cleanupWavRecording();
+
+  // Convert to base64
+  const bytes = new Uint8Array(wavBytes);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+
+  // Build initial prompt from dictionary terms
+  const initialPrompt = getDictionaryPrompt();
+
+  try {
+    const text = await invoke('transcribe_audio_local', {
+      audioBase64: base64,
+      initialPrompt: initialPrompt || null
+    });
+
+    if (text && text.trim()) {
+      let finalText = text.trim();
+      finalText = await maybeCorrectGrammar(finalText);
+      setStatus('Pasting…', false);
+      await invoke('paste_text', { text: finalText });
+      addHistoryEntry(finalText);
+      setStatus('Done', false);
+    } else {
+      setStatus('No speech', false);
+    }
+  } catch (err) {
+    console.error('Local transcription failed:', err);
+    setStatus('Transcribe failed', true);
+  }
+}
+
+function cleanupWavRecording() {
+  if (wavScriptNode) {
+    try { wavScriptNode.disconnect(); } catch {}
+    wavScriptNode = null;
+  }
+  if (wavSourceNode) {
+    try { wavSourceNode.disconnect(); } catch {}
+    wavSourceNode = null;
+  }
+  if (wavStream) {
+    try { wavStream.getTracks().forEach(t => t.stop()); } catch {}
+    wavStream = null;
+  }
+  if (wavAudioContext) {
+    try { wavAudioContext.close(); } catch {}
+    wavAudioContext = null;
+  }
+  wavBuffers = [];
+}
+
+function encodeWav(samples, sampleRate) {
+  const numChannels = 1;
+  const bitsPerSample = 16;
+  const bytesPerSample = bitsPerSample / 8;
+  const blockAlign = numChannels * bytesPerSample;
+  const dataLength = samples.length * bytesPerSample;
+  const headerLength = 44;
+  const buffer = new ArrayBuffer(headerLength + dataLength);
+  const view = new DataView(buffer);
+
+  // RIFF header
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, headerLength + dataLength - 8, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true);              // chunk size
+  view.setUint16(20, 1, true);               // PCM format
+  view.setUint16(22, numChannels, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * blockAlign, true); // byte rate
+  view.setUint16(32, blockAlign, true);
+  view.setUint16(34, bitsPerSample, true);
+
+  // data chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, dataLength, true);
+
+  // Write samples as 16-bit PCM
+  let idx = headerLength;
+  for (let i = 0; i < samples.length; i++) {
+    let s = Math.max(-1, Math.min(1, samples[i]));
+    s = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    view.setInt16(idx, s, true);
+    idx += 2;
+  }
+
+  return buffer;
+}
+
+function writeString(view, offset, str) {
+  for (let i = 0; i < str.length; i++) {
+    view.setUint8(offset + i, str.charCodeAt(i));
+  }
+}
+
+// ── Google Drive Sync UI ───────────────────────────────
+function obfuscateEmail(email) {
+  if (!email || !email.includes('@')) return email;
+  const [local, domain] = email.split('@');
+  const show = Math.min(3, local.length);
+  return local.slice(0, show) + '***@' + domain;
+}
+
+async function initSyncUI() {
+  const signedOutDiv = document.getElementById('sync-signed-out');
+  const signedInDiv  = document.getElementById('sync-signed-in');
+  const waitingDiv   = document.getElementById('sync-waiting');
+  const signInBtn    = document.getElementById('sync-signin-btn');
+  const signOutBtn   = document.getElementById('sync-signout-btn');
+  const syncNowBtn   = document.getElementById('sync-now-btn');
+  const avatarEl     = document.getElementById('sync-user-avatar');
+  const nameEl       = document.getElementById('sync-user-name');
+  const emailEl      = document.getElementById('sync-user-email');
+
+  // Set up callbacks
+  sync.setSyncCallbacks({
+    onStatus(status, detail) {
+      const textEl = syncNowBtn.querySelector('.sync-now-text');
+
+      if (status === 'syncing') {
+        syncNowBtn.classList.add('syncing');
+        syncNowBtn.classList.remove('synced-flash');
+      } else if (status === 'synced') {
+        syncNowBtn.classList.remove('syncing');
+        syncNowBtn.classList.add('synced-flash');
+        textEl.textContent = 'Synced';
+        setTimeout(() => {
+          // 1. Pin current width so we have a known start point
+          const currentW = syncNowBtn.getBoundingClientRect().width;
+          syncNowBtn.style.width = currentW + 'px';
+
+          // 2. Fade out text
+          textEl.style.opacity = '0';
+
+          setTimeout(() => {
+            // 3. Swap content while invisible
+            syncNowBtn.classList.remove('synced-flash');
+            textEl.textContent = 'Sync Now';
+
+            // 4. Force reflow so browser registers the new content width
+            void syncNowBtn.offsetWidth;
+
+            // 5. Release the pinned width — CSS transition animates to natural size
+            syncNowBtn.style.width = '';
+
+            // 6. Fade text back in
+            textEl.style.opacity = '1';
+          }, 250);
+        }, 15000);
+      } else if (status === 'error') {
+        syncNowBtn.classList.remove('syncing');
+        textEl.textContent = 'Retry';
+        setTimeout(() => { textEl.textContent = 'Sync Now'; }, 3000);
+      } else {
+        syncNowBtn.classList.remove('syncing', 'synced-flash');
+        textEl.textContent = 'Sync Now';
+      }
+    },
+    onSignIn(signedIn, user) {
+      if (signedIn && user) {
+        signedOutDiv.style.display = 'none';
+        waitingDiv.style.display = 'none';
+        signedInDiv.style.display = '';
+        avatarEl.src = user.picture || '';
+        avatarEl.style.display = user.picture ? '' : 'none';
+        nameEl.textContent = user.name || 'User';
+        emailEl.textContent = obfuscateEmail(user.email || '');
+      } else {
+        signedOutDiv.style.display = '';
+        waitingDiv.style.display = 'none';
+        signedInDiv.style.display = 'none';
+      }
+    }
+  });
+
+  const reopenBtn     = document.getElementById('sync-reopen-btn');
+  const cancelAuthBtn = document.getElementById('sync-cancel-btn');
+
+  // Show the "waiting for browser" panel and kick off the sign-in flow.
+  // Returns when the flow completes, is cancelled, or times out.
+  async function startSignIn() {
+    signedOutDiv.style.display = 'none';
+    waitingDiv.style.display = '';
+
+    try {
+      await sync.signIn();
+      // onSignIn callback will show signed-in panel
+    } catch (err) {
+      const cancelled = err?.message?.includes('oauth_cancelled') ||
+                        String(err).includes('oauth_cancelled');
+      if (!cancelled) {
+        console.error('Sign in error:', err);
+      }
+      // Return to signed-out panel on any failure/cancel
+      waitingDiv.style.display = 'none';
+      signedOutDiv.style.display = '';
+    }
+  }
+
+  // Sign in button
+  signInBtn.addEventListener('click', () => startSignIn());
+
+  // "Open Again" — cancel the stale listener, start a fresh OAuth flow
+  reopenBtn.addEventListener('click', async () => {
+    await invoke('cancel_google_oauth'); // unblock any pending accept()
+    // Small delay so Rust cleans up before we bind a new port
+    await new Promise(r => setTimeout(r, 100));
+    startSignIn();
+  });
+
+  // "Cancel" — unblock the Rust accept(), go back to sign-in screen
+  cancelAuthBtn.addEventListener('click', async () => {
+    await invoke('cancel_google_oauth');
+    waitingDiv.style.display = 'none';
+    signedOutDiv.style.display = '';
+  });
+
+  // Sign out button
+  signOutBtn.addEventListener('click', async () => {
+    await sync.signOut();
+  });
+
+  // Sync now button — smooth spinner transition
+  syncNowBtn.addEventListener('click', async () => {
+    if (syncNowBtn.classList.contains('syncing')) return;
+    try {
+      await sync.syncNow();
+    } catch (err) {
+      console.error('Manual sync failed:', err);
+      syncNowBtn.classList.remove('syncing');
+      const textEl = syncNowBtn.querySelector('.sync-now-text');
+      textEl.textContent = 'Retry';
+      setTimeout(() => { textEl.textContent = 'Sync Now'; }, 3000);
+    }
+  });
+
+  // Listen for sync data changes to re-render UI
+  window.addEventListener('sync-data-changed', (e) => {
+    renderDictionary();
+    renderHistory();
+  });
+
+  // Initialize the sync module (restores tokens, triggers initial sync)
+  await sync.initSync();
+}
+
+// ── Grammar Cleanup (GEC) ──────────────────────────────
+
+async function initGrammarUI() {
+  // Restore saved toggle state
+  const savedGrammar = await store.get('grammarCleanupEnabled');
+  const enabled = savedGrammar === true;
+  grammarToggle.checked = enabled;
+  gecModelSection.style.display = enabled ? 'block' : 'none';
+
+  // Toggle change handler
+  grammarToggle.addEventListener('change', async () => {
+    const on = grammarToggle.checked;
+    await store.set('grammarCleanupEnabled', on);
+    gecModelSection.style.display = on ? 'block' : 'none';
+
+    if (on) {
+      await checkAndLoadGecModel();
+    } else {
+      // Unload GEC model when toggle is turned off
+      if (gecModelLoaded) {
+        gecStatusText.textContent = 'Unloading model\u2026';
+        try {
+          await invoke('unload_gec_model');
+          gecModelLoaded = false;
+          gecStatusText.textContent = '';
+          gecStatusText.classList.remove('ready');
+          console.log('[GEC] Model unloaded');
+        } catch (err) {
+          console.warn('[GEC] Unload failed:', err);
+        }
+      }
+    }
+  });
+
+  // Download button
+  gecDownloadBtn.addEventListener('click', () => downloadGecModel());
+
+  // If already enabled, check model status
+  if (enabled) {
+    await checkAndLoadGecModel();
+  }
+}
+
+async function checkAndLoadGecModel() {
+  try {
+    const exists = await invoke('check_gec_model');
+    if (exists) {
+      gecStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model…';
+      gecDownloadBtn.style.display = 'none';
+      try {
+        await invoke('load_gec_model');
+        gecStatusText.textContent = '\u2713 Model ready';
+        gecStatusText.classList.add('ready');
+        gecModelLoaded = true;
+      } catch (err) {
+        console.error('GEC load failed:', err);
+        gecStatusText.textContent = '\u2717 Load failed';
+      }
+    } else {
+      gecStatusText.textContent = 'Model not downloaded (~105 MB)';
+      gecDownloadBtn.style.display = '';
+    }
+  } catch (err) {
+    console.error('GEC check failed:', err);
+    gecStatusText.textContent = '\u2717 Check failed';
+  }
+}
+
+async function downloadGecModel() {
+  gecDownloadBtn.style.display = 'none';
+  gecProgressWrap.style.display = '';
+  gecStatusText.textContent = 'Downloading…';
+
+  // Listen for progress events
+  const unlisten = await listen('gec-download-progress', (event) => {
+    const [downloaded, total] = event.payload;
+    if (total > 0) {
+      const pct = Math.round((downloaded / total) * 100);
+      gecProgressFill.style.width = `${pct}%`;
+      gecProgressText.textContent = `${pct}%`;
+    }
+  });
+
+  try {
+    await invoke('download_gec_model');
+    unlisten();
+    gecProgressWrap.style.display = 'none';
+    gecStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model\u2026';
+
+    await invoke('load_gec_model');
+    gecStatusText.textContent = '\u2713 Model ready';
+    gecStatusText.classList.add('ready');
+    gecModelLoaded = true;
+  } catch (err) {
+    unlisten();
+    console.error('GEC download/load failed:', err);
+    gecProgressWrap.style.display = 'none';
+    gecStatusText.textContent = '\u2717 Download failed';
+    gecDownloadBtn.style.display = '';
+    gecDownloadBtn.textContent = 'Retry Download';
+  }
+}
+
+/**
+ * If grammar cleanup is enabled and the model is loaded,
+ * run GECToR correction on the text. Otherwise return as-is.
+ */
+async function maybeCorrectGrammar(text) {
+  if (!grammarToggle.checked || !gecModelLoaded) {
+    return text;
+  }
+
+  try {
+    setStatus('Cleaning grammar…', false, true);
+    const corrected = await invoke('correct_grammar', { text });
+    if (corrected && corrected.trim()) {
+      console.log('[GEC] Corrected:', text, '→', corrected.trim());
+      return corrected.trim();
+    }
+  } catch (err) {
+    console.error('[GEC] Grammar correction failed:', err);
+  }
+
+  return text; // fallback: return original
 }
 
 // ── Boot ───────────────────────────────────────────────

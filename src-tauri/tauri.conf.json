@@ -36,12 +36,15 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com; font-src https://api.fontshare.com; connect-src https://api.groq.com https://api.fontshare.com"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline' https://api.fontshare.com; font-src https://api.fontshare.com; connect-src https://api.groq.com https://api.fontshare.com https://oauth2.googleapis.com https://www.googleapis.com; img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
+    "externalBin": [
+      "binaries/whisper-worker"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
