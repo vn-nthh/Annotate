@@ -11,6 +11,9 @@
 //!   → {"cmd":"transcribe","audio_b64":"...","prompt":"optional"}
 //!   ← {"ok":true,"text":"transcribed text"}
 //!
+//!   → {"cmd":"transcribe_segments","audio_b64":"...","prompt":"optional"}
+//!   ← {"ok":true,"segments":[{"start":0.0,"end":2.5,"text":"...","no_speech_prob":0.1,"avg_logprob":-0.5}]}
+//!
 //!   → {"cmd":"quit"}
 //!   (process exits)
 
@@ -67,6 +70,21 @@ fn main() {
                 match result {
                     Ok(text) => {
                         let resp = serde_json::json!({"ok": true, "text": text});
+                        let _ = writeln!(out, "{}", resp);
+                    }
+                    Err(e) => {
+                        let _ = writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
+                    }
+                }
+            }
+            "transcribe_segments" => {
+                let audio_b64 = msg["audio_b64"].as_str().unwrap_or("");
+                let prompt = msg["prompt"].as_str();
+                let language = msg["language"].as_str();
+                let result = transcribe_segments(audio_b64, prompt, language);
+                match result {
+                    Ok(segments) => {
+                        let resp = serde_json::json!({"ok": true, "segments": segments});
                         let _ = writeln!(out, "{}", resp);
                     }
                     Err(e) => {
@@ -232,6 +250,106 @@ fn transcribe(audio_b64: &str, prompt: Option<&str>) -> Result<String, String> {
     Ok(text)
 }
 
+/// Transcribe audio and return timestamped segments (for subtitle generation).
+///
+/// Key differences from `transcribe`:
+/// - Timestamps are enabled (no_timestamps = false)
+/// - condition_on_previous_text = true (better context within long segments)
+/// - Returns structured segments with timing and quality metrics
+/// - No RMS pre-filter (VAD already handles silence detection upstream)
+fn transcribe_segments(audio_b64: &str, prompt: Option<&str>, language: Option<&str>) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+
+    // Decode base64 WAV
+    let wav_bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| format!("Base64 decode failed: {}", e))?;
+
+    // Parse WAV to f32 PCM
+    let pcm = wav_to_pcm_f32(&wav_bytes)?;
+
+    if pcm.is_empty() {
+        return Ok(serde_json::json!([]));
+    }
+
+    // Run inference with timestamps
+    let guard = CTX.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+    let ctx = guard.as_ref().ok_or("Model not loaded")?;
+
+    let mut state = ctx
+        .create_state()
+        .map_err(|e| format!("Failed to create state: {e}"))?;
+
+    let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+    params.set_language(language); // None = auto-detect, Some("en") = English, etc.
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+
+    // KEY DIFFERENCE: enable timestamps for subtitle generation
+    params.set_no_timestamps(false);
+
+    if let Some(p) = prompt {
+        if !p.is_empty() {
+            params.set_initial_prompt(p);
+        }
+    }
+
+    state
+        .full(params, &pcm)
+        .map_err(|e| format!("Inference failed: {e}"))?;
+
+    // Collect all segments with timestamps and quality metrics
+    let n_segments = state.full_n_segments();
+    let mut segments = Vec::new();
+
+    for i in 0..n_segments {
+        let seg = match state.get_segment(i) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let seg_text = seg.to_str_lossy().unwrap_or_default().to_string();
+        let trimmed = seg_text.trim();
+
+        // Skip empty segments
+        if trimmed.is_empty() || trimmed.chars().all(|c| c.is_ascii_punctuation()) {
+            continue;
+        }
+
+        let no_speech_prob = seg.no_speech_probability();
+
+        let n_tokens = seg.n_tokens();
+        let avg_logprob = if n_tokens > 0 {
+            let sum: f32 = (0..n_tokens)
+                .filter_map(|t| seg.get_token(t))
+                .map(|tok| tok.token_data().plog)
+                .sum();
+            sum / n_tokens as f32
+        } else {
+            0.0
+        };
+
+        // Get timestamps (in centiseconds from whisper.cpp, convert to seconds)
+        let start_ts = seg.start_timestamp();
+        let end_ts = seg.end_timestamp();
+        let start = start_ts as f64 / 100.0;
+        let end = end_ts as f64 / 100.0;
+
+        segments.push(serde_json::json!({
+            "start": start,
+            "end": end,
+            "text": seg_text.trim(),
+            "no_speech_prob": no_speech_prob,
+            "avg_logprob": avg_logprob,
+            "compression_ratio": 0.0,  // Not directly available from whisper.cpp
+        }));
+    }
+
+    Ok(serde_json::Value::Array(segments))
+}
 
 fn wav_to_pcm_f32(raw: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = std::io::Cursor::new(raw);

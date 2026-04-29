@@ -3,6 +3,8 @@ mod transcribe;
 mod whisper_local;
 mod google_auth;
 mod gec;
+mod vad;
+pub mod subtitle;
 
 use audio::{enumerate_capture_devices, apply_device_override};
 use base64::Engine;
@@ -197,6 +199,104 @@ async fn unload_gec_model() -> Result<(), String> {
     .map_err(|e| format!("Join error: {}", e))?
 }
 
+// ── Subtitle Commands ──────────────────────────────────
+
+/// Check if FFmpeg is available
+#[tauri::command]
+fn check_ffmpeg(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(subtitle::is_ffmpeg_available(&data_dir))
+}
+
+/// Download FFmpeg, emitting progress events
+#[tauri::command]
+async fn download_ffmpeg(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    subtitle::ensure_ffmpeg(&data_dir, move |downloaded, total| {
+        let _ = app_handle.emit("ffmpeg-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("FFmpeg download failed: {}", e))
+}
+
+/// Check if the VAD model is downloaded
+#[tauri::command]
+fn check_vad_model(app: AppHandle) -> Result<bool, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(vad::is_model_downloaded(&data_dir))
+}
+
+/// Download the VAD model, emitting progress events
+#[tauri::command]
+async fn download_vad_model(app: AppHandle) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+    let app_handle = app.clone();
+    vad::download_model(&data_dir, move |downloaded, total| {
+        let _ = app_handle.emit("vad-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("VAD download failed: {}", e))
+}
+
+/// Generate subtitles from an audio/video file.
+/// Emits 'subtitle-progress' events during processing.
+#[tauri::command]
+async fn generate_subtitles(
+    app: AppHandle,
+    file_path: String,
+    engine: String,
+    api_key: Option<String>,
+    prompt: Option<String>,
+    language: Option<String>,
+) -> Result<Vec<subtitle::SrtEntry>, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+
+    let app_handle = app.clone();
+    subtitle::generate_subtitles(
+        &file_path,
+        &engine,
+        api_key.as_deref(),
+        prompt.as_deref(),
+        language.as_deref(),
+        &data_dir,
+        move |progress| {
+            let _ = app_handle.emit("subtitle-progress", &progress);
+        },
+    )
+    .await
+}
+
+/// Save SRT entries to a file.
+#[tauri::command]
+fn save_srt_file(entries: Vec<subtitle::SrtEntry>, output_path: String) -> Result<(), String> {
+    let srt_content = subtitle::format_srt(&entries);
+    std::fs::write(&output_path, srt_content)
+        .map_err(|e| format!("Failed to write SRT file: {}", e))
+}
+
+/// Get the SRT text content from entries (for preview).
+#[tauri::command]
+fn format_srt_preview(entries: Vec<subtitle::SrtEntry>) -> String {
+    subtitle::format_srt(&entries)
+}
+
 // ── CUDA Runtime Commands ──────────────────────────────
 
 /// Check if CUDA runtime DLLs are available.
@@ -351,6 +451,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .build(),
@@ -431,6 +532,13 @@ pub fn run() {
             unload_gec_model,
             correct_grammar,
             unload_whisper_model,
+            check_ffmpeg,
+            download_ffmpeg,
+            check_vad_model,
+            download_vad_model,
+            generate_subtitles,
+            save_srt_file,
+            format_srt_preview,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

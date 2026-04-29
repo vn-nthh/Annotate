@@ -27,6 +27,10 @@ struct VerboseResponse {
 struct Segment {
     text: String,
     #[serde(default)]
+    start: f64,
+    #[serde(default)]
+    end: f64,
+    #[serde(default)]
     no_speech_prob: f64,
     #[serde(default)]
     avg_logprob: f64,
@@ -123,3 +127,69 @@ pub async fn transcribe_with_groq(
 
     Ok(text)
 }
+
+/// Transcribe audio using Groq's Whisper API and return timestamped segments.
+/// Used by the subtitle pipeline — requests `timestamp_granularities[]=segment`.
+pub async fn transcribe_segments_with_groq(
+    audio_base64: &str,
+    api_key: &str,
+    initial_prompt: Option<&str>,
+    language: Option<&str>,
+) -> Result<Vec<crate::subtitle::WhisperSegment>, Box<dyn std::error::Error + Send + Sync>> {
+    let audio_bytes = base64::engine::general_purpose::STANDARD.decode(audio_base64)?;
+
+    let audio_part = multipart::Part::bytes(audio_bytes)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")?;
+
+    let mut form = multipart::Form::new()
+        .part("file", audio_part)
+        .text("model", "whisper-large-v3-turbo")
+        .text("response_format", "verbose_json")
+        .text("timestamp_granularities[]", "segment");
+
+    if let Some(lang) = language {
+        if !lang.is_empty() {
+            form = form.text("language", lang.to_string());
+        }
+    }
+
+    if let Some(prompt) = initial_prompt {
+        if !prompt.is_empty() {
+            form = form.text("prompt", prompt.to_string());
+        }
+    }
+
+    let response = HTTP_CLIENT
+        .post("https://api.groq.com/openai/v1/audio/transcriptions")
+        .header("Authorization", format!("Bearer {}", api_key))
+        .multipart(form)
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Groq API error {}: {}", status, body).into());
+    }
+
+    let result: VerboseResponse = response.json().await?;
+
+    let segments = match result.segments {
+        Some(segs) => segs
+            .into_iter()
+            .map(|seg| crate::subtitle::WhisperSegment {
+                start: seg.start,
+                end: seg.end,
+                text: seg.text,
+                no_speech_prob: seg.no_speech_prob,
+                avg_logprob: seg.avg_logprob,
+                compression_ratio: seg.compression_ratio,
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+
+    Ok(segments)
+}
+

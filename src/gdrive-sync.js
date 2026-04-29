@@ -280,14 +280,15 @@ async function writeFile(name, data, existingFileId = null) {
  * Dictionary sync — TOMBSTONE MERGE strategy.
  *
  * Format: { terms: string[], deleted: string[] }
- * - Union both sides' terms
- * - Union both sides' deleted (tombstones)
- * - Final terms = union(terms) minus union(deleted)
  *
- * This ensures:
- *   - Additions merge across devices
- *   - Deletions propagate across devices
- *   - Re-adding a deleted term lifts the tombstone (handled in main.js addDictTerm)
+ * Merge rules (per term):
+ *   - Local tombstone beats a stale remote presence (delete wins)
+ *   - Remote tombstone beats a stale local presence (delete wins)
+ *   - A term is only resurrected if it is explicitly re-added AFTER deletion
+ *     (which lifts the tombstone via addDictTerm in main.js)
+ *
+ * This ensures deletions always propagate correctly on the first sync
+ * after the delete, even before the remote has been updated.
  */
 async function syncDictionary() {
   const local = getLocalDictionary();
@@ -336,11 +337,30 @@ function normalizeDictStore(raw) {
 /**
  * Merge two dictionary stores with tombstone awareness.
  *
- * Key rule: a term is "alive" on a side if it's in that side's terms
- * but NOT in that side's deleted. This means the user either never
- * deleted it, or re-added it after deleting (which lifts the tombstone
- * locally). If alive on EITHER side, the add wins — the tombstone is
- * cleared from the merged result.
+ * Survival rule per term:
+ *   - A term survives only if it is alive on a side that has NOT
+ *     explicitly tombstoned it on the other side.
+ *
+ *   isAliveLocal  = in local.terms  && NOT in local.deleted
+ *   isAliveRemote = in remote.terms && NOT in remote.deleted
+ *
+ *   Survives if:
+ *     isAliveLocal  && !localDeletedSet (trivially true — local itself is alive)
+ *     OR
+ *     isAliveRemote && NOT locally tombstoned   ← key fix: local delete wins
+ *
+ *   Simplified to:
+ *     isAliveLocal || (isAliveRemote && !localDeletedSet.has(key))
+ *
+ *   Symmetrically, a remote tombstone also beats a stale local presence:
+ *     isAliveLocal && !remoteDeletedSet.has(key)  || isAliveRemote
+ *
+ *   Combined (either explicit delete wins):
+ *     (isAliveLocal  && !remoteDeletedSet.has(key))
+ *     || (isAliveRemote && !localDeletedSet.has(key))
+ *
+ * Re-adding a term always lifts its local tombstone first (in addDictTerm),
+ * so re-adds still work correctly.
  */
 function mergeDictionaries(local, remote) {
   // Build lookup sets for each side
@@ -349,8 +369,8 @@ function mergeDictionaries(local, remote) {
   const remoteTermSet = new Set(remote.terms.map(t => t.toLowerCase().trim()));
   const remoteDeletedSet = new Set(remote.deleted.map(t => t.toLowerCase().trim()));
 
-  // A term is "alive" on a side if in terms but NOT in deleted
-  const isAliveLocal = (key) => localTermSet.has(key) && !localDeletedSet.has(key);
+  // A term is "alive" on a side if present in terms but NOT in its own deleted list
+  const isAliveLocal  = (key) => localTermSet.has(key)  && !localDeletedSet.has(key);
   const isAliveRemote = (key) => remoteTermSet.has(key) && !remoteDeletedSet.has(key);
 
   // Collect all unique terms and tombstones (preserving display casing)
@@ -366,18 +386,25 @@ function mergeDictionaries(local, remote) {
     if (!allDeleted.has(key)) allDeleted.set(key, t.trim());
   }
 
-  // Resolve: alive on either side → term survives, tombstone cleared
+  // Resolve survival:
+  // A term survives only if it is alive on a side AND the other side
+  // has NOT explicitly tombstoned it. An explicit tombstone always wins
+  // over a stale (not-yet-synced) presence on the other side.
   const finalTerms = [];
   for (const [key, display] of allTerms) {
-    if (isAliveLocal(key) || isAliveRemote(key)) {
+    const localAliveAndNotRemoteDeleted  = isAliveLocal(key)  && !remoteDeletedSet.has(key);
+    const remoteAliveAndNotLocalDeleted  = isAliveRemote(key) && !localDeletedSet.has(key);
+    if (localAliveAndNotRemoteDeleted || remoteAliveAndNotLocalDeleted) {
       finalTerms.push(display);
     }
   }
 
+  // Keep a tombstone if the term did not survive (i.e. was not re-added on
+  // either side after the deletion).
+  const survivingSet = new Set(finalTerms.map(t => t.toLowerCase().trim()));
   const finalDeleted = [];
   for (const [key, display] of allDeleted) {
-    // Keep tombstone only if no side has explicitly re-added it
-    if (!isAliveLocal(key) && !isAliveRemote(key)) {
+    if (!survivingSet.has(key)) {
       finalDeleted.push(display);
     }
   }

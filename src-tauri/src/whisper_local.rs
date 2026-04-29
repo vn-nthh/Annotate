@@ -215,6 +215,38 @@ pub async fn transcribe_pcm_b64(
     Ok(resp["text"].as_str().unwrap_or("").to_string())
 }
 
+/// Transcribe audio via the worker process, returning timestamped segments.
+/// Used by the subtitle pipeline.
+pub async fn transcribe_segments_b64(
+    audio_b64: &str,
+    initial_prompt: Option<&str>,
+    language: Option<&str>,
+) -> Result<Vec<crate::subtitle::WhisperSegment>, String> {
+    let mut guard = WORKER.lock().await;
+    let worker = guard.as_mut().ok_or("Whisper worker not running")?;
+
+    let cmd = serde_json::json!({
+        "cmd": "transcribe_segments",
+        "audio_b64": audio_b64,
+        "prompt": initial_prompt.unwrap_or(""),
+        "language": language
+    });
+
+    let resp = send_command(worker, &cmd).await?;
+
+    if resp["ok"].as_bool() != Some(true) {
+        let err = resp["error"].as_str().unwrap_or("Unknown error");
+        return Err(format!("Segment transcription failed: {}", err));
+    }
+
+    let segments: Vec<crate::subtitle::WhisperSegment> =
+        serde_json::from_value(resp["segments"].clone())
+            .map_err(|e| format!("Failed to parse segments: {}", e))?;
+
+    Ok(segments)
+}
+
+
 // ── IPC Helpers ────────────────────────────────────────
 
 async fn send_command(

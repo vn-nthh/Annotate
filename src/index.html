@@ -47,6 +47,14 @@
             </svg>
             <span>Dictionary</span>
           </button>
+          <button class="tab-btn" data-tab="subtitling" title="Subtitling">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="4" width="20" height="16" rx="2"/>
+              <line x1="6" y1="12" x2="18" y2="12"/>
+              <line x1="6" y1="16" x2="14" y2="16"/>
+            </svg>
+            <span>Subtitles</span>
+          </button>
           <button class="tab-btn" data-tab="settings" title="Settings">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"/>
@@ -95,6 +103,100 @@
         </div>
       </section>
 
+      <!-- Subtitling Tab -->
+      <section class="tab-panel" id="tab-subtitling">
+        <div class="panel-header">
+          <h2>Subtitling</h2>
+        </div>
+        <p class="panel-desc" id="sub-desc">Generate SRT subtitles from any audio or video file using VAD + Whisper.</p>
+
+        <!-- File Selection -->
+        <div class="sub-file-zone" id="sub-file-zone">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+            <line x1="12" y1="18" x2="12" y2="12"/>
+            <line x1="9" y1="15" x2="15" y2="15"/>
+          </svg>
+          <span class="sub-file-label" id="sub-file-label">Choose a file...</span>
+          <span class="sub-file-name" id="sub-file-name"></span>
+        </div>
+
+        <!-- Language Selection -->
+        <section class="setting-group sub-lang-group" id="sub-lang-group">
+          <label class="setting-label" for="sub-lang-select">Language</label>
+          <div class="select-wrap">
+            <select id="sub-lang-select">
+              <option value="auto">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+              <option value="nl">Dutch</option>
+              <option value="ru">Russian</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="tr">Turkish</option>
+              <option value="pl">Polish</option>
+              <option value="sv">Swedish</option>
+              <option value="vi">Vietnamese</option>
+              <option value="th">Thai</option>
+              <option value="id">Indonesian</option>
+              <option value="uk">Ukrainian</option>
+            </select>
+            <span class="select-arrow">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+          </div>
+        </section>
+
+        <!-- Dependencies Status -->
+        <div class="sub-deps" id="sub-deps">
+          <div class="sub-dep-row" id="sub-dep-ffmpeg">
+            <span class="sub-dep-label">FFmpeg</span>
+            <span class="sub-dep-status" id="sub-dep-ffmpeg-status">Checking...</span>
+            <button class="whisper-action-btn" id="sub-ffmpeg-download-btn" style="display:none;">Download</button>
+          </div>
+          <div class="sub-dep-row" id="sub-dep-vad">
+            <span class="sub-dep-label">VAD Model</span>
+            <span class="sub-dep-status" id="sub-dep-vad-status">Checking...</span>
+            <button class="whisper-action-btn" id="sub-vad-download-btn" style="display:none;">Download</button>
+          </div>
+        </div>
+
+        <!-- Generate Button -->
+        <button class="sub-generate-btn" id="sub-generate-btn" disabled>Generate Subtitles</button>
+
+        <!-- Progress -->
+        <div class="sub-progress" id="sub-progress" style="display:none;">
+          <div class="whisper-progress-bar">
+            <div id="sub-progress-fill" class="whisper-progress-fill" style="width:0%"></div>
+          </div>
+          <span class="sub-progress-text" id="sub-progress-text">Starting...</span>
+        </div>
+
+        <!-- SRT Result (shown after generation) -->
+        <div class="sub-result" id="sub-result" style="display:none;">
+          <!-- File title -->
+          <h3 class="sub-result-title" id="sub-result-title"></h3>
+          <span class="sub-result-count" id="sub-preview-count"></span>
+
+          <!-- Preview -->
+          <pre class="sub-preview" id="sub-preview"></pre>
+
+          <!-- Action buttons -->
+          <div class="sub-result-actions">
+            <button class="sub-save-btn" id="sub-save-btn">Save .srt File</button>
+            <button class="sub-new-btn" id="sub-new-btn">New File</button>
+          </div>
+        </div>
+      </section>
+
       <!-- Settings Tab -->
       <section class="tab-panel" id="tab-settings">
         <div class="panel-header">
@@ -124,6 +226,41 @@
               <option value="webspeech">Web Speech (built-in)</option>
               <option value="groq">Groq Whisper (cloud)</option>
               <option value="local">Local Whisper (offline)</option>
+            </select>
+            <span class="select-arrow">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+          </div>
+        </section>
+
+        <hr class="divider" />
+
+        <!-- Transcription Language -->
+        <section class="setting-group">
+          <label class="setting-label" for="live-lang-select">Language</label>
+          <div class="select-wrap">
+            <select id="live-lang-select">
+              <option value="auto">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+              <option value="nl">Dutch</option>
+              <option value="ru">Russian</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="tr">Turkish</option>
+              <option value="pl">Polish</option>
+              <option value="sv">Swedish</option>
+              <option value="vi">Vietnamese</option>
+              <option value="th">Thai</option>
+              <option value="id">Indonesian</option>
+              <option value="uk">Ukrainian</option>
             </select>
             <span class="select-arrow">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>

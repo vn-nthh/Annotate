@@ -75,6 +75,7 @@ async function init() {
   renderDictionary();
   await initSyncUI();
   await initGrammarUI();
+  await initSubtitlingUI();
 }
 
 // ── Tab Navigation ─────────────────────────────────────
@@ -899,7 +900,7 @@ async function checkWhisperModelStatus() {
     const downloaded = await invoke('check_whisper_model');
     if (downloaded) {
       if (whisperModelLoaded) {
-        whisperStatusText.textContent = '\u2713 Model ready';
+        whisperStatusText.textContent = 'Model ready';
         whisperStatusText.classList.add('ready');
         whisperDownloadBtn.style.display = 'none';
         whisperLoadBtn.style.display = 'none';
@@ -962,7 +963,7 @@ async function loadWhisperModel() {
   try {
     await invoke('load_whisper_model');
     whisperModelLoaded = true;
-    whisperStatusText.textContent = '\u2713 Model ready';
+    whisperStatusText.textContent = 'Model ready';
     whisperStatusText.classList.add('ready');
     setStatus('Whisper ready', false);
   } catch (err) {
@@ -1417,7 +1418,7 @@ async function checkAndLoadGecModel() {
       gecDownloadBtn.style.display = 'none';
       try {
         await invoke('load_gec_model');
-        gecStatusText.textContent = '\u2713 Model ready';
+        gecStatusText.textContent = 'Model ready';
         gecStatusText.classList.add('ready');
         gecModelLoaded = true;
       } catch (err) {
@@ -1456,7 +1457,7 @@ async function downloadGecModel() {
     gecStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model\u2026';
 
     await invoke('load_gec_model');
-    gecStatusText.textContent = '\u2713 Model ready';
+    gecStatusText.textContent = 'Model ready';
     gecStatusText.classList.add('ready');
     gecModelLoaded = true;
   } catch (err) {
@@ -1490,6 +1491,370 @@ async function maybeCorrectGrammar(text) {
   }
 
   return text; // fallback: return original
+}
+
+// ── Subtitling ─────────────────────────────────────────
+
+// State
+let subSelectedFile = null;
+let subSrtEntries = null;
+let subGenerating = false;
+
+// Elements
+const subFileZone = document.getElementById('sub-file-zone');
+const subFileLabel = document.getElementById('sub-file-label');
+const subFileName = document.getElementById('sub-file-name');
+const subGenerateBtn = document.getElementById('sub-generate-btn');
+const subProgress = document.getElementById('sub-progress');
+const subProgressFill = document.getElementById('sub-progress-fill');
+const subProgressText = document.getElementById('sub-progress-text');
+const subResult = document.getElementById('sub-result');
+const subResultTitle = document.getElementById('sub-result-title');
+const subPreview = document.getElementById('sub-preview');
+const subPreviewCount = document.getElementById('sub-preview-count');
+const subSaveBtn = document.getElementById('sub-save-btn');
+const subNewBtn = document.getElementById('sub-new-btn');
+const subFfmpegStatus = document.getElementById('sub-dep-ffmpeg-status');
+const subFfmpegDownloadBtn = document.getElementById('sub-ffmpeg-download-btn');
+const subVadStatus = document.getElementById('sub-dep-vad-status');
+const subVadDownloadBtn = document.getElementById('sub-vad-download-btn');
+const subDeps = document.getElementById('sub-deps');
+const subDesc = document.getElementById('sub-desc');
+const subLangSelect = document.getElementById('sub-lang-select');
+const subLangGroup = document.getElementById('sub-lang-group');
+const liveLangSelect = document.getElementById('live-lang-select');
+
+async function initSubtitlingUI() {
+  // Check dependencies
+  await checkSubDeps();
+
+  // Restore saved language preferences
+  const savedSubLang = await store.get('subtitleLanguage');
+  if (savedSubLang && subLangSelect.querySelector(`option[value="${savedSubLang}"]`)) {
+    subLangSelect.value = savedSubLang;
+  }
+  const savedLiveLang = await store.get('liveLanguage');
+  if (savedLiveLang && liveLangSelect.querySelector(`option[value="${savedLiveLang}"]`)) {
+    liveLangSelect.value = savedLiveLang;
+  }
+
+  // Persist on change
+  subLangSelect.addEventListener('change', () => store.set('subtitleLanguage', subLangSelect.value));
+  liveLangSelect.addEventListener('change', () => store.set('liveLanguage', liveLangSelect.value));
+
+  // File picker
+  subFileZone.addEventListener('click', pickSubFile);
+
+  // Generate button
+  subGenerateBtn.addEventListener('click', generateSubtitles);
+
+  // Save button
+  subSaveBtn.addEventListener('click', saveSrtFile);
+
+  // New File button
+  subNewBtn.addEventListener('click', resetSubtitling);
+
+  // FFmpeg download
+  subFfmpegDownloadBtn.addEventListener('click', async () => {
+    subFfmpegDownloadBtn.style.display = 'none';
+    subFfmpegStatus.textContent = 'Downloading...';
+    try {
+      await invoke('download_ffmpeg');
+      subFfmpegStatus.textContent = 'Ready';
+      subFfmpegStatus.classList.add('ready');
+      maybeHideSubDeps();
+      updateSubGenerateBtn();
+    } catch (err) {
+      subFfmpegStatus.textContent = 'Download failed';
+      subFfmpegDownloadBtn.style.display = '';
+      console.error('[Subtitle] FFmpeg download failed:', err);
+    }
+  });
+
+  // VAD download
+  subVadDownloadBtn.addEventListener('click', async () => {
+    subVadDownloadBtn.style.display = 'none';
+    subVadStatus.textContent = 'Downloading...';
+    try {
+      await invoke('download_vad_model');
+      subVadStatus.textContent = 'Ready';
+      subVadStatus.classList.add('ready');
+      maybeHideSubDeps();
+      updateSubGenerateBtn();
+    } catch (err) {
+      subVadStatus.textContent = 'Download failed';
+      subVadDownloadBtn.style.display = '';
+      console.error('[Subtitle] VAD download failed:', err);
+    }
+  });
+
+  // Listen for progress events
+  listen('subtitle-progress', (event) => {
+    const p = event.payload;
+    subProgress.style.display = '';
+    subProgressText.textContent = p.message;
+
+    if (p.stage === 'transcribe' && p.total > 0) {
+      const pct = Math.round((p.current / p.total) * 100);
+      subProgressFill.style.width = pct + '%';
+    } else if (p.stage === 'format') {
+      subProgressFill.style.width = '100%';
+    } else {
+      // Indeterminate for extract/read/vad
+      subProgressFill.style.width = '30%';
+    }
+  });
+
+  // Listen for ffmpeg/vad download progress
+  listen('ffmpeg-download-progress', (event) => {
+    const [downloaded, total] = event.payload;
+    if (total > 0) {
+      const pct = Math.round((downloaded / total) * 100);
+      subFfmpegStatus.textContent = `Downloading... ${pct}%`;
+    }
+  });
+
+  listen('vad-download-progress', (event) => {
+    const [downloaded, total] = event.payload;
+    if (total > 0) {
+      const pct = Math.round((downloaded / total) * 100);
+      subVadStatus.textContent = `Downloading... ${pct}%`;
+    }
+  });
+}
+
+async function checkSubDeps() {
+  // FFmpeg
+  try {
+    const ffmpegReady = await invoke('check_ffmpeg');
+    if (ffmpegReady) {
+      subFfmpegStatus.textContent = 'Ready';
+      subFfmpegStatus.classList.add('ready');
+    } else {
+      subFfmpegStatus.textContent = 'Not installed';
+      subFfmpegDownloadBtn.style.display = '';
+    }
+  } catch (err) {
+    subFfmpegStatus.textContent = 'Error';
+    console.error('[Subtitle] FFmpeg check failed:', err);
+  }
+
+  // VAD Model
+  try {
+    const vadReady = await invoke('check_vad_model');
+    if (vadReady) {
+      subVadStatus.textContent = 'Ready';
+      subVadStatus.classList.add('ready');
+    } else {
+      subVadStatus.textContent = 'Not installed';
+      subVadDownloadBtn.style.display = '';
+    }
+  } catch (err) {
+    subVadStatus.textContent = 'Error';
+    console.error('[Subtitle] VAD check failed:', err);
+  }
+
+  maybeHideSubDeps();
+  updateSubGenerateBtn();
+}
+
+/// Hide deps section when both FFmpeg and VAD are ready
+function maybeHideSubDeps() {
+  const ffmpegOk = subFfmpegStatus.classList.contains('ready');
+  const vadOk = subVadStatus.classList.contains('ready');
+  if (ffmpegOk && vadOk) {
+    subDeps.style.display = 'none';
+  } else {
+    subDeps.style.display = '';
+  }
+}
+
+async function pickSubFile() {
+  if (subGenerating) return;
+
+  try {
+    // Use Tauri dialog to pick a file
+    const { open } = window.__TAURI__.dialog;
+    const selected = await open({
+      multiple: false,
+      filters: [{
+        name: 'Media Files',
+        extensions: ['mp4', 'mkv', 'avi', 'mov', 'webm', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'm4a', 'wma']
+      }]
+    });
+
+    if (selected) {
+      subSelectedFile = selected;
+      const name = selected.split(/[\\/]/).pop();
+      subFileName.textContent = name;
+      subFileZone.classList.add('has-file');
+
+      // Reset result
+      subResult.style.display = 'none';
+      subSrtEntries = null;
+
+      updateSubGenerateBtn();
+    }
+  } catch (err) {
+    console.error('[Subtitle] File picker failed:', err);
+  }
+}
+
+function updateSubGenerateBtn() {
+  const ffmpegOk = subFfmpegStatus.classList.contains('ready');
+  const vadOk = subVadStatus.classList.contains('ready');
+  const hasFile = !!subSelectedFile;
+  const notGenerating = !subGenerating;
+
+  // Check engine-specific readiness
+  const engine = modeSelect.value;
+  let engineOk = true;
+  if (engine === 'groq') {
+    // Need API key — it's loaded by now
+    engineOk = true; // API key is fetched during generate
+  }
+
+  subGenerateBtn.disabled = !(ffmpegOk && vadOk && hasFile && notGenerating && engineOk);
+}
+
+async function generateSubtitles() {
+  if (!subSelectedFile || subGenerating) return;
+
+  subGenerating = true;
+  subGenerateBtn.disabled = true;
+  subGenerateBtn.textContent = 'Generating...';
+  subProgress.style.display = '';
+  subProgressFill.style.width = '0%';
+  subProgressText.textContent = 'Starting...';
+  subResult.style.display = 'none';
+
+  try {
+    const engine = modeSelect.value === 'local' ? 'local' : 'groq';
+
+    // Get API key if using Groq
+    let apiKey = null;
+    if (engine === 'groq') {
+      try {
+        apiKey = await invoke('load_api_key');
+      } catch (e) {
+        throw new Error('Groq API key not configured. Set it in Settings.');
+      }
+    }
+
+    // Get dictionary terms as prompt
+    let prompt = null;
+    const dict = await store.get('dictionary');
+    if (dict) {
+      const terms = Object.entries(dict)
+        .filter(([_, v]) => !v.deleted)
+        .map(([k]) => k);
+      if (terms.length > 0) {
+        prompt = terms.join(', ');
+      }
+    }
+
+    const subLang = subLangSelect.value;
+    const entries = await invoke('generate_subtitles', {
+      filePath: subSelectedFile,
+      engine: engine,
+      apiKey: apiKey,
+      prompt: prompt,
+      language: subLang === 'auto' ? null : subLang,
+    });
+
+    subSrtEntries = entries;
+
+    if (entries.length === 0) {
+      subProgressText.textContent = 'No speech detected in the audio.';
+      subProgressFill.style.width = '100%';
+    } else {
+      // Show result view
+      const fileName = subSelectedFile.split(/[\\/]/).pop().replace(/\.[^.]+$/, '');
+      subResultTitle.textContent = fileName;
+      subResultTitle.title = fileName; // tooltip for full name
+
+      const srtText = await invoke('format_srt_preview', { entries });
+      subPreview.textContent = srtText;
+      subPreviewCount.textContent = entries.length + ' entries';
+
+      // Hide setup UI, show result
+      subFileZone.style.display = 'none';
+      subDeps.style.display = 'none';
+      subGenerateBtn.style.display = 'none';
+      subDesc.style.display = 'none';
+      subLangGroup.style.display = 'none';
+      subProgress.style.display = 'none';
+      subResult.style.display = '';
+    }
+  } catch (err) {
+    subProgressText.textContent = 'Error: ' + (err.message || err);
+    subProgressFill.style.width = '100%';
+    console.error('[Subtitle] Generation failed:', err);
+  } finally {
+    subGenerating = false;
+    subGenerateBtn.textContent = 'Generate Subtitles';
+    updateSubGenerateBtn();
+  }
+}
+
+function resetSubtitling() {
+  // Clear state
+  subSelectedFile = null;
+  subSrtEntries = null;
+  subGenerating = false;
+
+  // Restore setup UI
+  subFileZone.style.display = '';
+  subFileZone.classList.remove('has-file');
+  subFileName.textContent = '';
+  subDesc.style.display = '';
+  subLangGroup.style.display = '';
+  subGenerateBtn.style.display = '';
+  subGenerateBtn.textContent = 'Generate Subtitles';
+  subProgress.style.display = 'none';
+  subProgressFill.style.width = '0%';
+  maybeHideSubDeps();
+
+  // Hide result
+  subResult.style.display = 'none';
+  subPreview.textContent = '';
+  subPreviewCount.textContent = '';
+  subResultTitle.textContent = '';
+
+  updateSubGenerateBtn();
+}
+
+async function saveSrtFile() {
+  if (!subSrtEntries || subSrtEntries.length === 0) return;
+
+  try {
+    const { save } = window.__TAURI__.dialog;
+
+    // Derive default filename from source file
+    const baseName = subSelectedFile
+      ? subSelectedFile.split(/[\\/]/).pop().replace(/\.[^.]+$/, '')
+      : 'subtitles';
+
+    const outputPath = await save({
+      defaultPath: baseName + '.srt',
+      filters: [{
+        name: 'SRT Subtitle',
+        extensions: ['srt']
+      }]
+    });
+
+    if (outputPath) {
+      await invoke('save_srt_file', {
+        entries: subSrtEntries,
+        outputPath: outputPath,
+      });
+      subProgressText.textContent = 'Saved to ' + outputPath.split(/[\\/]/).pop();
+      subProgress.style.display = '';
+      subProgressFill.style.width = '100%';
+    }
+  } catch (err) {
+    console.error('[Subtitle] Save failed:', err);
+  }
 }
 
 // ── Boot ───────────────────────────────────────────────
