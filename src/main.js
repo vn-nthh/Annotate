@@ -8,6 +8,7 @@ import * as sync from './gdrive-sync.js';
 // ── State ──────────────────────────────────────────────
 let store = null;
 let isRecording = false;
+let isProcessing = false; // true while async transcribe is in-flight
 let mediaRecorder = null;
 let audioChunks = [];
 let speechRecognition = null;
@@ -370,7 +371,7 @@ function mapKeyToTauri(code) {
 // ── Hotkey Event Handling ──────────────────────────────
 async function setupHotkeyListener() {
   await listen('hotkey-down', async () => {
-    if (isRecording) return;
+    if (isRecording || isProcessing) return;
     isRecording = true;
     setStatus('Listening…', false, true);
 
@@ -416,6 +417,7 @@ async function setupHotkeyListener() {
   await listen('hotkey-up', async () => {
     if (!isRecording) return;
     isRecording = false;
+    isProcessing = true;
 
     // Hide throbber
     try {
@@ -427,12 +429,13 @@ async function setupHotkeyListener() {
     const mode = modeSelect.value;
 
     if (mode === 'webspeech') {
-      stopWebSpeech();
+      await stopWebSpeech();
     } else if (mode === 'local') {
       await stopWavRecording();
     } else {
       await stopMediaRecording();
     }
+    isProcessing = false;
   });
 }
 
@@ -510,9 +513,18 @@ function startWebSpeech() {
 }
 
 function stopWebSpeech() {
-  if (speechRecognition) {
+  return new Promise((resolve) => {
+    if (!speechRecognition) {
+      resolve();
+      return;
+    }
+    const origOnEnd = speechRecognition.onend;
+    speechRecognition.onend = async (...args) => {
+      if (origOnEnd) await origOnEnd(...args);
+      resolve();
+    };
     speechRecognition.stop();
-  }
+  });
 }
 
 // ── MediaRecorder / Groq Mode ──────────────────────────
