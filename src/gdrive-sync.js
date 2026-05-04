@@ -5,7 +5,7 @@
  * to Google Drive appDataFolder (hidden, app-specific storage).
  *
  * - Dictionary: tombstone merge (additions + deletions propagate across devices)
- * - History: merge strategy (union deduped by text, newest timestamp wins)
+ * - History: tombstone merge (additions + deletions propagate across devices)
  */
 
 const { invoke } = window.__TAURI__.core;
@@ -415,19 +415,28 @@ function mergeDictionaries(local, remote) {
 }
 
 /**
- * History sync — MERGE strategy.
- * Union of local and remote entries, deduped by text, newest-first, capped at 50.
+ * History sync — TOMBSTONE MERGE strategy.
+ *
+ * Format: { entries: {text,time}[], deleted: {text,time}[] }
+ *
+ * Merge rules (per entry, keyed by normalized text):
+ *   - Local tombstone beats a stale remote presence (delete wins)
+ *   - Remote tombstone beats a stale local presence (delete wins)
+ *   - An entry is only resurrected if it is explicitly re-added AFTER deletion
+ *     (which lifts the tombstone via addHistoryEntry in main.js)
+ *
+ * This mirrors the dictionary tombstone merge strategy.
  */
 async function syncHistory() {
-  const localHistory = getLocalHistory();
+  const local = getLocalHistory();
   const file = await findFile(HISTORY_FILE);
 
   if (file) {
-    const remoteHistory = await readFile(file.id);
-    const remoteEntries = Array.isArray(remoteHistory) ? remoteHistory : [];
+    const remoteRaw = await readFile(file.id);
+    const remote = normalizeHistoryStore(remoteRaw);
 
-    // Merge: union deduped by text (keep most recent timestamp per text)
-    const merged = mergeHistories(localHistory, remoteEntries);
+    // Merge with tombstones
+    const merged = mergeHistories(local, remote);
 
     // Save merged locally
     saveLocalHistory(merged);
@@ -435,35 +444,121 @@ async function syncHistory() {
     // Push merged to Drive
     await writeFile(HISTORY_FILE, merged, file.id);
 
-    console.log(`[Sync] History merged: ${localHistory.length} local + ${remoteEntries.length} remote -> ${merged.length} merged`);
-    return merged;
+    console.log(`[Sync] History merged: ${local.entries.length} local + ${remote.entries.length} remote -> ${merged.entries.length} entries (${merged.deleted.length} tombstones)`);
+    return merged.entries;
   } else {
     // No remote — push local
-    if (localHistory.length > 0) {
-      await writeFile(HISTORY_FILE, localHistory);
-      console.log(`[Sync] History uploaded: ${localHistory.length} entries (first sync)`);
+    if (local.entries.length > 0 || local.deleted.length > 0) {
+      await writeFile(HISTORY_FILE, local);
+      console.log(`[Sync] History uploaded: ${local.entries.length} entries`);
     }
-    return localHistory;
+    return local.entries;
   }
 }
 
-function mergeHistories(local, remote) {
-  // Build a map keyed by normalized text — keep entry with most recent timestamp
-  const map = new Map();
+/**
+ * Normalize remote data to { entries, deleted } format.
+ * Handles both the old flat array format and the new tombstone format.
+ */
+function normalizeHistoryStore(raw) {
+  if (Array.isArray(raw)) {
+    return { entries: raw, deleted: [] };
+  }
+  return {
+    entries: Array.isArray(raw?.entries) ? raw.entries : [],
+    deleted: Array.isArray(raw?.deleted) ? raw.deleted : [],
+  };
+}
 
-  for (const entry of [...local, ...remote]) {
-    if (!entry || typeof entry.text !== 'string') continue;
-    const key = entry.text.trim().toLowerCase();
-    const existing = map.get(key);
-    if (!existing || entry.time > existing.time) {
-      map.set(key, entry);
+/**
+ * Merge two history stores with tombstone awareness.
+ *
+ * Keyed by normalized text (lowercase, trimmed).
+ * When an entry appears on both sides, keep the one with the most recent timestamp.
+ *
+ * Survival rule per entry:
+ *   (isAliveLocal  && !remoteDeletedSet.has(key))
+ *   || (isAliveRemote && !localDeletedSet.has(key))
+ *
+ * Result is sorted newest-first and capped at 50.
+ */
+function mergeHistories(local, remote) {
+  // Build lookup sets for each side
+  const localEntryMap = new Map();
+  for (const e of local.entries) {
+    if (!e || typeof e.text !== 'string') continue;
+    const key = e.text.trim().toLowerCase();
+    const existing = localEntryMap.get(key);
+    if (!existing || e.time > existing.time) localEntryMap.set(key, e);
+  }
+
+  const localDeletedSet = new Set();
+  for (const e of local.deleted) {
+    if (!e || typeof e.text !== 'string') continue;
+    localDeletedSet.add(e.text.trim().toLowerCase());
+  }
+
+  const remoteEntryMap = new Map();
+  for (const e of remote.entries) {
+    if (!e || typeof e.text !== 'string') continue;
+    const key = e.text.trim().toLowerCase();
+    const existing = remoteEntryMap.get(key);
+    if (!existing || e.time > existing.time) remoteEntryMap.set(key, e);
+  }
+
+  const remoteDeletedSet = new Set();
+  for (const e of remote.deleted) {
+    if (!e || typeof e.text !== 'string') continue;
+    remoteDeletedSet.add(e.text.trim().toLowerCase());
+  }
+
+  // A entry is "alive" on a side if present in entries but NOT in its own deleted list
+  const isAliveLocal  = (key) => localEntryMap.has(key)  && !localDeletedSet.has(key);
+  const isAliveRemote = (key) => remoteEntryMap.has(key) && !remoteDeletedSet.has(key);
+
+  // Collect all unique entries (preserving best timestamp)
+  const allEntries = new Map();
+  for (const [key, e] of localEntryMap) {
+    const existing = allEntries.get(key);
+    if (!existing || e.time > existing.time) allEntries.set(key, e);
+  }
+  for (const [key, e] of remoteEntryMap) {
+    const existing = allEntries.get(key);
+    if (!existing || e.time > existing.time) allEntries.set(key, e);
+  }
+
+  // Collect all tombstones
+  const allDeleted = new Map();
+  for (const e of [...local.deleted, ...remote.deleted]) {
+    if (!e || typeof e.text !== 'string') continue;
+    const key = e.text.trim().toLowerCase();
+    if (!allDeleted.has(key)) allDeleted.set(key, e);
+  }
+
+  // Resolve survival: either explicit delete wins
+  const finalEntries = [];
+  for (const [key, entry] of allEntries) {
+    const localAliveAndNotRemoteDeleted  = isAliveLocal(key)  && !remoteDeletedSet.has(key);
+    const remoteAliveAndNotLocalDeleted  = isAliveRemote(key) && !localDeletedSet.has(key);
+    if (localAliveAndNotRemoteDeleted || remoteAliveAndNotLocalDeleted) {
+      finalEntries.push(entry);
+    }
+  }
+
+  // Keep a tombstone if the entry did not survive
+  const survivingSet = new Set(finalEntries.map(e => e.text.trim().toLowerCase()));
+  const finalDeleted = [];
+  for (const [key, entry] of allDeleted) {
+    if (!survivingSet.has(key)) {
+      finalDeleted.push(entry);
     }
   }
 
   // Sort newest-first, cap at 50
-  return Array.from(map.values())
-    .sort((a, b) => b.time - a.time)
-    .slice(0, 50);
+  finalEntries.sort((a, b) => b.time - a.time);
+  if (finalEntries.length > 50) finalEntries.length = 50;
+
+  return { entries: finalEntries, deleted: finalDeleted };
 }
 
 // ── Public Sync API ────────────────────────────────────
@@ -558,14 +653,25 @@ function saveLocalDictionary(store) {
   localStorage.setItem('annotate_dictionary', JSON.stringify(store));
 }
 
+// History: { entries: {text,time}[], deleted: {text,time}[] }
+// Auto-migrates from old flat array format.
+
 function getLocalHistory() {
   try {
-    return JSON.parse(localStorage.getItem('annotate_history') || '[]');
+    const raw = JSON.parse(localStorage.getItem('annotate_history') || '{"entries":[],"deleted":[]}');
+    // Migrate from old flat array format
+    if (Array.isArray(raw)) {
+      return { entries: raw, deleted: [] };
+    }
+    return {
+      entries: Array.isArray(raw.entries) ? raw.entries : [],
+      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
+    };
   } catch {
-    return [];
+    return { entries: [], deleted: [] };
   }
 }
 
-function saveLocalHistory(history) {
-  localStorage.setItem('annotate_history', JSON.stringify(history));
+function saveLocalHistory(store) {
+  localStorage.setItem('annotate_history', JSON.stringify(store));
 }

@@ -134,6 +134,11 @@ input::-ms-reveal {
   border-color: var(--danger);
 }
 
+[data-theme="dark"] .history-item-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 [data-theme="dark"] .hotkey-recorder.recording {
   border-color: #90cdf4;
 }
@@ -564,10 +569,22 @@ body::before {
   overflow: hidden;
 }
 
-.history-item-copy {
+.history-item-actions {
+  display: flex;
+  gap: 4px;
   position: absolute;
   top: 8px;
   right: 8px;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.history-item:hover .history-item-actions {
+  opacity: 1;
+}
+
+.history-item-copy,
+.history-item-remove {
   font-family: var(--font-main);
   font-size: 0.62rem;
   font-weight: 500;
@@ -577,19 +594,19 @@ body::before {
   border-radius: 4px;
   padding: 2px 8px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s, color 0.2s, border-color 0.2s;
+  transition: color 0.2s, border-color 0.2s;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-}
-
-.history-item:hover .history-item-copy {
-  opacity: 1;
 }
 
 .history-item-copy:hover {
   color: var(--ink);
   border-color: var(--ink-faint);
+}
+
+.history-item-remove:hover {
+  color: #8b4444;
+  border-color: #8b4444;
 }
 
 .history-empty {

@@ -239,8 +239,7 @@ function setupEventListeners() {
 
   // History clear
   historyClear.addEventListener('click', () => {
-    localStorage.removeItem('annotate_history');
-    renderHistory();
+    clearHistory();
   });
 
   // Dictionary
@@ -811,23 +810,86 @@ function setStatus(message, isError = false, isActive = false) {
   }
 }
 
-// ── History ────────────────────────────────────────────
+// ── History (tombstone-aware) ──────────────────────────
+// Storage format: { entries: {text,time}[], deleted: {text,time}[] }
+// Tombstones (deleted[]) ensure deletions propagate across synced devices.
 const HISTORY_KEY = 'annotate_history';
 const HISTORY_MAX = 50;
 
-function getHistory() {
+/**
+ * Read the full history store from localStorage.
+ * Auto-migrates from the old flat array format.
+ */
+function getHistoryStore() {
   try {
-    return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]');
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '{"entries":[],"deleted":[]}');
+    // Migrate from old flat array format
+    if (Array.isArray(raw)) {
+      return { entries: raw, deleted: [] };
+    }
+    return {
+      entries: Array.isArray(raw.entries) ? raw.entries : [],
+      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
+    };
   } catch {
-    return [];
+    return { entries: [], deleted: [] };
   }
 }
 
+function saveHistoryStore(store) {
+  localStorage.setItem(HISTORY_KEY, JSON.stringify(store));
+}
+
+/** Convenience: just the entries (for rendering, etc.) */
+function getHistory() {
+  return getHistoryStore().entries;
+}
+
 function addHistoryEntry(text) {
-  const history = getHistory();
-  history.unshift({ text, time: Date.now() });
-  if (history.length > HISTORY_MAX) history.length = HISTORY_MAX;
-  localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
+  const store = getHistoryStore();
+  const key = text.trim().toLowerCase();
+
+  store.entries.unshift({ text, time: Date.now() });
+  if (store.entries.length > HISTORY_MAX) store.entries.length = HISTORY_MAX;
+
+  // Lift tombstone if re-adding a previously deleted entry
+  store.deleted = store.deleted.filter(e => e.text.trim().toLowerCase() !== key);
+
+  saveHistoryStore(store);
+  renderHistory();
+  sync.scheduleSyncAfterChange();
+}
+
+function removeHistoryEntry(index) {
+  const store = getHistoryStore();
+  const removed = store.entries.splice(index, 1)[0];
+
+  if (removed) {
+    const key = removed.text.trim().toLowerCase();
+    // Add to tombstone list (avoid duplicate tombstones)
+    if (!store.deleted.some(e => e.text.trim().toLowerCase() === key)) {
+      store.deleted.push({ text: removed.text, time: removed.time });
+    }
+  }
+
+  saveHistoryStore(store);
+  renderHistory();
+  sync.scheduleSyncAfterChange();
+}
+
+function clearHistory() {
+  const store = getHistoryStore();
+
+  // Tombstone every entry so the clear propagates across devices
+  for (const entry of store.entries) {
+    const key = entry.text.trim().toLowerCase();
+    if (!store.deleted.some(e => e.text.trim().toLowerCase() === key)) {
+      store.deleted.push({ text: entry.text, time: entry.time });
+    }
+  }
+  store.entries = [];
+
+  saveHistoryStore(store);
   renderHistory();
   sync.scheduleSyncAfterChange();
 }
@@ -846,7 +908,7 @@ function renderHistory() {
 
   historyClear.style.display = '';
 
-  history.forEach(entry => {
+  history.forEach((entry, index) => {
     const li = document.createElement('li');
     li.className = 'history-item';
 
@@ -858,6 +920,9 @@ function renderHistory() {
     textSpan.className = 'history-item-text';
     textSpan.textContent = entry.text;
 
+    const actionsSpan = document.createElement('span');
+    actionsSpan.className = 'history-item-actions';
+
     const copyBtn = document.createElement('button');
     copyBtn.className = 'history-item-copy';
     copyBtn.textContent = 'Copy';
@@ -868,9 +933,20 @@ function renderHistory() {
       setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
     });
 
+    const removeBtn = document.createElement('button');
+    removeBtn.className = 'history-item-remove';
+    removeBtn.textContent = 'Delete';
+    removeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeHistoryEntry(index);
+    });
+
+    actionsSpan.appendChild(copyBtn);
+    actionsSpan.appendChild(removeBtn);
+
     li.appendChild(timeSpan);
     li.appendChild(textSpan);
-    li.appendChild(copyBtn);
+    li.appendChild(actionsSpan);
     historyList.appendChild(li);
   });
 }
