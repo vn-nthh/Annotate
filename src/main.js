@@ -326,6 +326,7 @@ function startHotkeyRecording() {
     parts.push(key);
 
     const shortcut = parts.join('+');
+    const previousHotkey = await store.get('hotkey');
 
     document.removeEventListener('keydown', handler, true);
     recordingHotkey = false;
@@ -334,14 +335,27 @@ function startHotkeyRecording() {
     hotkeyDisplay.textContent = shortcut;
     hotkeyDisplay.classList.add('hotkey-combo');
 
-    await store.set('hotkey', shortcut);
-
     try {
       await invoke('register_hotkey', { shortcutStr: shortcut });
+      await store.set('hotkey', shortcut);
       setStatus('Hotkey set', false);
     } catch (err) {
       console.error('Failed to register hotkey:', err);
       setStatus('Invalid hotkey', true);
+
+      // `register_hotkey` clears existing bindings first, so restore the prior one on failure.
+      if (previousHotkey) {
+        hotkeyDisplay.textContent = previousHotkey;
+        hotkeyDisplay.classList.add('hotkey-combo');
+        try {
+          await invoke('register_hotkey', { shortcutStr: previousHotkey });
+        } catch (restoreErr) {
+          console.error('Failed to restore previous hotkey:', restoreErr);
+        }
+      } else {
+        hotkeyDisplay.textContent = 'Not set';
+        hotkeyDisplay.classList.remove('hotkey-combo');
+      }
     }
   };
 
@@ -425,16 +439,22 @@ async function setupHotkeyListener() {
       console.error('Throbber hide failed:', err);
     }
 
-    const mode = modeSelect.value;
+    try {
+      const mode = modeSelect.value;
 
-    if (mode === 'webspeech') {
-      await stopWebSpeech();
-    } else if (mode === 'local') {
-      await stopWavRecording();
-    } else {
-      await stopMediaRecording();
+      if (mode === 'webspeech') {
+        await stopWebSpeech();
+      } else if (mode === 'local') {
+        await stopWavRecording();
+      } else {
+        await stopMediaRecording();
+      }
+    } catch (err) {
+      console.error('Hotkey-up handling failed:', err);
+      setStatus('Transcription failed', true);
+    } finally {
+      isProcessing = false;
     }
-    isProcessing = false;
   });
 }
 

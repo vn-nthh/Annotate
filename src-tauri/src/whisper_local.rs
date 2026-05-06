@@ -4,9 +4,6 @@
 //! This module spawns that process on-demand and communicates via stdin/stdout JSON.
 //! When unloaded, the process is killed and ALL CUDA memory (~573 MB) is freed.
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -102,9 +99,38 @@ fn worker_exe_path() -> PathBuf {
 
 /// Spawn the worker process and load the model.
 pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
-    // Already running?
-    if is_loaded() {
-        return Ok(());
+    // If we already have a running worker, keep using it. If it exited/crashed,
+    // clear stale state and respawn below.
+    {
+        let mut guard = WORKER.lock().await;
+        if let Some(worker) = guard.as_mut() {
+            match worker.child.try_wait() {
+                Ok(None) => {
+                    if let Ok(mut loaded) = MODEL_LOADED.lock() {
+                        *loaded = true;
+                    }
+                    return Ok(());
+                }
+                Ok(Some(status)) => {
+                    log::warn!(
+                        "[WhisperLocal] Existing worker exited ({:?}); respawning",
+                        status
+                    );
+                    *guard = None;
+                }
+                Err(err) => {
+                    log::warn!(
+                        "[WhisperLocal] Failed to query worker state ({}); respawning",
+                        err
+                    );
+                    *guard = None;
+                }
+            }
+        }
+    }
+
+    if let Ok(mut loaded) = MODEL_LOADED.lock() {
+        *loaded = false;
     }
 
     let worker_path = worker_exe_path();
