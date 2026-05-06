@@ -7,14 +7,34 @@ mod vad;
 pub mod subtitle;
 
 use audio::{enumerate_capture_devices, apply_device_override};
-use base64::Engine;
+#[cfg(not(target_os = "windows"))]
 use enigo::{Enigo, Keyboard, Settings};
 use serde::Serialize;
+#[cfg(target_os = "windows")]
+use std::ptr::null_mut;
+#[cfg(not(target_os = "windows"))]
 use std::sync::{LazyLock, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::{
+    System::{
+        DataExchange::{
+            CloseClipboard, EmptyClipboard, GetClipboardData,
+            OpenClipboard, SetClipboardData,
+        },
+        Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
+    },
+    UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+    },
+};
+
+#[cfg(target_os = "windows")]
+const CF_UNICODETEXT_FORMAT: u32 = 13;
 
 /// Shared Enigo instance — creating one per paste leaks Win32 input hooks and COM state.
+#[cfg(not(target_os = "windows"))]
 static ENIGO: LazyLock<Mutex<Enigo>> = LazyLock::new(|| {
     Mutex::new(Enigo::new(&Settings::default()).expect("Failed to create Enigo"))
 });
@@ -351,15 +371,201 @@ fn paste_text(text: String) -> Result<(), String> {
     // Small delay to let the user's hotkey release propagate
     std::thread::sleep(std::time::Duration::from_millis(100));
 
+    paste_text_impl(&text)
+}
+
+#[cfg(target_os = "windows")]
+fn paste_text_impl(text: &str) -> Result<(), String> {
+    let sanitized = sanitize_text_for_input(text);
+    set_clipboard_unicode_text(&sanitized)?;
+    send_ctrl_v()?;
+    std::thread::sleep(std::time::Duration::from_millis(220));
+    if let Err(err) = clear_injected_clipboard_if_unchanged(&sanitized) {
+        log::warn!("[Clipboard] cleanup failed: {}", err);
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn paste_text_impl(text: &str) -> Result<(), String> {
     let mut enigo = ENIGO
         .lock()
         .map_err(|e| format!("Enigo lock poisoned: {}", e))?;
 
-    // Set clipboard
-    enigo.text(&text)
+    enigo.text(text)
         .map_err(|e| format!("Failed to type text: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+struct ClipboardGuard;
+
+#[cfg(target_os = "windows")]
+impl ClipboardGuard {
+    fn open() -> Result<Self, String> {
+        let opened = unsafe { OpenClipboard(null_mut()) };
+        if opened == 0 {
+            return Err("Failed to open clipboard".to_string());
+        }
+        Ok(Self)
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ClipboardGuard {
+    fn drop(&mut self) {
+        unsafe {
+            CloseClipboard();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn set_clipboard_unicode_text(text: &str) -> Result<(), String> {
+    let mut bytes = Vec::new();
+    for unit in text.encode_utf16().chain(std::iter::once(0)) {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+
+    let _guard = ClipboardGuard::open()?;
+    if unsafe { EmptyClipboard() } == 0 {
+        return Err("Failed to empty clipboard".to_string());
+    }
+    write_clipboard_format(CF_UNICODETEXT_FORMAT, &bytes)
+}
+
+#[cfg(target_os = "windows")]
+fn write_clipboard_format(format: u32, data: &[u8]) -> Result<(), String> {
+    let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len()) };
+    if handle.is_null() {
+        return Err(format!("Failed to allocate clipboard memory for format {}", format));
+    }
+    let ptr = unsafe { GlobalLock(handle) };
+    if ptr.is_null() {
+        return Err(format!("Failed to lock clipboard memory for format {}", format));
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
+        GlobalUnlock(handle);
+    }
+    if unsafe { SetClipboardData(format, handle) }.is_null() {
+        return Err(format!("Failed to set clipboard format {}", format));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn read_clipboard_unicode_text() -> Result<Option<String>, String> {
+    let _guard = ClipboardGuard::open()?;
+    let handle = unsafe { GetClipboardData(CF_UNICODETEXT_FORMAT) };
+    if handle.is_null() {
+        return Ok(None);
+    }
+    let ptr = unsafe { GlobalLock(handle) };
+    if ptr.is_null() {
+        return Ok(None);
+    }
+
+    let size_bytes = unsafe { GlobalSize(handle) };
+    if size_bytes < 2 {
+        unsafe { GlobalUnlock(handle) };
+        return Ok(Some(String::new()));
+    }
+
+    let max_units = size_bytes / 2;
+    let units = unsafe { std::slice::from_raw_parts(ptr as *const u16, max_units) };
+    let len = units.iter().position(|u| *u == 0).unwrap_or(units.len());
+    let text = String::from_utf16_lossy(&units[..len]);
+    unsafe {
+        GlobalUnlock(handle);
+    }
+    Ok(Some(text))
+}
+
+#[cfg(target_os = "windows")]
+fn clear_injected_clipboard_if_unchanged(injected_text: &str) -> Result<(), String> {
+    let current = read_clipboard_unicode_text()?;
+    if current.as_deref() != Some(injected_text) {
+        return Ok(());
+    }
+
+    let _guard = ClipboardGuard::open()?;
+    if unsafe { EmptyClipboard() } == 0 {
+        return Err("Failed to clear clipboard".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn send_ctrl_v() -> Result<(), String> {
+    let mut inputs = [
+        keyboard_input(VK_CONTROL, 0),
+        keyboard_input(VK_V, 0),
+        keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent != inputs.len() as u32 {
+        return Err(format!("Failed to send Ctrl+V: sent {} of {}", sent, inputs.len()));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn keyboard_input(vk: u16, flags: u32) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn sanitize_text_for_input(text: &str) -> String {
+    let mut sanitized = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '\u{00A0}' => sanitized.push(' '),
+            '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' => {}
+            '\r' => {
+                sanitized.push_str("\r\n");
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            '\n' => sanitized.push_str("\r\n"),
+            _ => sanitized.push(ch),
+        }
+    }
+
+    sanitized
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::sanitize_text_for_input;
+
+    #[test]
+    fn sanitizes_text_for_windows_clipboard_paste() {
+        let text = "a\u{00A0}b\u{200B}c\r\nd\re\n\u{FEFF}f";
+        assert_eq!(sanitize_text_for_input(text), "a bc\r\nd\r\ne\r\nf");
+    }
 }
 
 /// Register a global hotkey that emits press/release events

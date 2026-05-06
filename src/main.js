@@ -511,7 +511,7 @@ function startWebSpeech() {
     if (text) {
       setStatus('Pasting…', false);
       try {
-        const finalText = await maybeCorrectGrammar(text);
+        const finalText = normalizeTextForOutput(await maybeCorrectGrammar(text));
         await invoke('paste_text', { text: finalText });
         addHistoryEntry(finalText);
         setStatus('Done', false);
@@ -674,7 +674,7 @@ async function stopMediaRecording() {
 
         if (text && text.trim()) {
           let finalText = text.trim();
-          finalText = await maybeCorrectGrammar(finalText);
+          finalText = normalizeTextForOutput(await maybeCorrectGrammar(finalText));
           setStatus('Pasting…', false);
           await invoke('paste_text', { text: finalText });
           addHistoryEntry(finalText);
@@ -830,6 +830,14 @@ function setStatus(message, isError = false, isActive = false) {
   }
 }
 
+function normalizeTextForOutput(text) {
+  return text
+    .normalize('NFC')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\r\n|\r|\n/g, '\r\n');
+}
+
 // ── History (tombstone-aware) ──────────────────────────
 // Storage format: { entries: {text,time}[], deleted: {text,time}[] }
 // Tombstones (deleted[]) ensure deletions propagate across synced devices.
@@ -948,7 +956,7 @@ function renderHistory() {
     copyBtn.textContent = 'Copy';
     copyBtn.addEventListener('click', (e) => {
       e.stopPropagation();
-      navigator.clipboard.writeText(entry.text);
+      navigator.clipboard.writeText(normalizeTextForOutput(entry.text));
       copyBtn.textContent = 'Copied!';
       setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1200);
     });
@@ -1243,7 +1251,7 @@ async function stopWavRecording() {
 
     if (text && text.trim()) {
       let finalText = text.trim();
-      finalText = await maybeCorrectGrammar(finalText);
+      finalText = normalizeTextForOutput(await maybeCorrectGrammar(finalText));
       setStatus('Pasting…', false);
       await invoke('paste_text', { text: finalText });
       addHistoryEntry(finalText);
