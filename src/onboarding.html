@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Annotate Setup</title>
+  <link rel="icon" type="image/png" href="./annotate.png" />
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@300,400,500,600,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./index.css" />
+</head>
+<body class="onboarding-window-body">
+  <main class="onboarding-standalone">
+    <div class="onboarding-shell">
+      <section class="onboarding-options">
+        <div class="onboarding-kicker">First run setup</div>
+        <h1>Choose how Annotate listens.</h1>
+        <p class="onboarding-lede">Pick an audio device and transcription model now, or skip and use system audio with WebSpeech.</p>
+
+        <div class="onboarding-field">
+          <label class="setting-label" for="onboarding-mic-select">Audio Device</label>
+          <div class="select-wrap">
+            <select id="onboarding-mic-select">
+              <option value="">Default system audio</option>
+            </select>
+            <span class="select-arrow">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="onboarding-field">
+          <label class="setting-label" for="onboarding-mode-select">Transcription Engine</label>
+          <div class="engine-cards" id="onboarding-mode-select" role="radiogroup" aria-label="Transcription engine">
+            <label class="engine-card">
+              <input type="radio" name="onboarding-mode" value="webspeech" checked />
+              <span>
+                <strong>WebSpeech</strong>
+                <small>Built in, no setup</small>
+              </span>
+            </label>
+            <label class="engine-card">
+              <input type="radio" name="onboarding-mode" value="groq" />
+              <span>
+                <strong>Cloud</strong>
+                <small>Groq Whisper API</small>
+              </span>
+            </label>
+            <label class="engine-card">
+              <input type="radio" name="onboarding-mode" value="local" />
+              <span>
+                <strong>Local</strong>
+                <small>Offline Whisper</small>
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div class="onboarding-field">
+          <label class="setting-label" for="onboarding-model-select">Model</label>
+          <div class="select-wrap">
+            <select id="onboarding-model-select"></select>
+            <span class="select-arrow">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="onboarding-field" id="onboarding-local-section" style="display:none;">
+          <label class="setting-label" for="onboarding-acceleration-select">Local Acceleration</label>
+          <div class="select-wrap">
+            <select id="onboarding-acceleration-select">
+              <option value="cuda">CUDA</option>
+              <option value="vulkan">Vulkan (not active yet)</option>
+            </select>
+            <span class="select-arrow">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+            </span>
+          </div>
+        </div>
+
+        <div class="onboarding-field onboarding-api" id="onboarding-api-section" style="display:none;">
+          <label class="setting-label" for="onboarding-api-input">Groq API Key</label>
+          <div class="input-wrap">
+            <input
+              type="password"
+              id="onboarding-api-input"
+              placeholder="Paste Groq API key"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button id="onboarding-api-toggle" class="icon-btn" title="Show/hide key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="onboarding-actions">
+          <button class="onboarding-primary" id="onboarding-save">Use these settings</button>
+          <button class="onboarding-skip" id="onboarding-skip">Skip for now</button>
+        </div>
+      </section>
+
+      <aside class="onboarding-explainer">
+        <div class="onboarding-explainer-card">
+          <span class="onboarding-pill" id="onboarding-summary">Default system audio + WebSpeech</span>
+          <h2 id="onboarding-explanation-title">Fastest start</h2>
+          <p id="onboarding-explanation-body">WebSpeech uses the browser speech service and needs no API key, model download, or GPU runtime.</p>
+          <ol id="onboarding-explanation-steps">
+            <li>Uses your system default microphone.</li>
+            <li>Starts immediately after you set a hotkey.</li>
+            <li>You can switch to Groq or local Whisper later in Settings.</li>
+          </ol>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <script type="module" src="./onboarding.js"></script>
+</body>
+</html>

@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Annotate — Voice to Text, Instantly</title>
+  <meta name="description" content="Annotate turns your voice into text instantly. Push-to-talk transcription with offline AI, subtitle generation, and cloud sync — all in a beautiful native app." />
+  <link rel="icon" type="image/png" href="../annotate.png" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- ─── Nav ─── -->
+  <nav class="nav" id="nav">
+    <div class="container">
+      <a href="#" class="nav-logo">
+        <img src="../annotate_logowithtext_white.svg" alt="Annotate" class="nav-logo-img" />
+      </a>
+      <div class="nav-links">
+        <a href="#features">Features</a>
+        <a href="#how-it-works">How It Works</a>
+        <a href="#engines">Engines</a>
+        <a href="#download" class="nav-cta">Download</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ─── Hero ─── -->
+  <section class="hero" id="hero">
+    <div class="container">
+      <div class="hero-badge">
+        <span class="hero-badge-dot"></span>
+        Built with Tauri &amp; Whisper AI
+      </div>
+
+      <h1>Voice to text,<br/><span class="highlight">instantly.</span></h1>
+
+      <p class="hero-desc">
+        Hold a hotkey, speak, release — your words appear as text wherever your cursor is.
+        Powered by local AI that runs completely offline.
+      </p>
+
+      <div class="hero-actions">
+        <a href="#download" class="btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download for Windows
+        </a>
+        <a href="#features" class="btn-secondary">
+          Learn More
+        </a>
+      </div>
+
+      <!-- App Preview (CSS mockup) -->
+      <div class="hero-preview">
+        <div class="app-window">
+          <div class="app-titlebar">
+            <div class="app-titlebar-logo">
+              <img src="../annotate_logowithtext_white.svg" alt="Annotate" class="app-titlebar-logo-img" />
+            </div>
+            <div class="app-titlebar-dots">
+              <span></span><span></span>
+            </div>
+          </div>
+          <div class="app-body-mock">
+            <div class="app-sidebar-mock">
+              <div class="tab active">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+              </div>
+              <div class="tab">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>
+              </div>
+              <div class="tab">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>
+              </div>
+              <div class="tab">
+                <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+              </div>
+            </div>
+            <div class="app-content-mock">
+              <h3>Transcription History</h3>
+              <div class="mock-entry">
+                <div class="mock-entry-time">2 min ago</div>
+                <div class="mock-entry-text">Let's schedule the product review for Thursday afternoon and invite the design team.</div>
+              </div>
+              <div class="mock-entry">
+                <div class="mock-entry-time">15 min ago</div>
+                <div class="mock-entry-text">The quarterly report shows a 23% increase in user engagement across all platforms.</div>
+              </div>
+              <div class="mock-entry">
+                <div class="mock-entry-time">1 hour ago</div>
+                <div class="mock-entry-text">Remember to update the API documentation before the release on Friday.</div>
+              </div>
+              <div class="mock-entry">
+                <div class="mock-entry-time">3 hours ago</div>
+                <div class="mock-entry-text">Can you send me the final version of the presentation slides?</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Features ─── -->
+  <section class="section features" id="features">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">Features</p>
+        <h2 class="section-title">Everything you need to<br/>turn speech into text.</h2>
+        <p class="section-desc">From instant dictation to full subtitle generation, Annotate is built for people who think faster than they type.</p>
+      </div>
+      <div class="features-grid reveal">
+        <!-- Feature 1 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+          </div>
+          <h3>Push-to-Talk</h3>
+          <p>Hold your custom hotkey, speak naturally, release — transcribed text is instantly pasted at your cursor position.</p>
+        </div>
+        <!-- Feature 2 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3>Fully Offline</h3>
+          <p>Run Whisper AI locally with CUDA acceleration. Your audio never leaves your machine — complete privacy by design.</p>
+        </div>
+        <!-- Feature 3 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="6" y1="12" x2="18" y2="12"/><line x1="6" y1="16" x2="14" y2="16"/></svg>
+          </div>
+          <h3>Subtitle Generation</h3>
+          <p>Generate precise SRT subtitles from any audio or video file using Voice Activity Detection and Whisper.</p>
+        </div>
+        <!-- Feature 4 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/><line x1="8" y1="7" x2="16" y2="7"/><line x1="8" y1="11" x2="13" y2="11"/></svg>
+          </div>
+          <h3>Custom Dictionary</h3>
+          <p>Add specialized terms, names, and jargon to boost transcription accuracy for your specific domain.</p>
+        </div>
+        <!-- Feature 5 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </div>
+          <h3>Grammar Cleanup</h3>
+          <p>Automatically fix grammar and punctuation in transcriptions using a local AI model — no cloud needed.</p>
+        </div>
+        <!-- Feature 6 -->
+        <div class="feature-card">
+          <div class="feature-icon">
+            <svg viewBox="0 0 24 24"><polyline points="16 16 12 12 8 16"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.39 18.39A5 5 0 0018 9h-1.26A8 8 0 103 16.3"/></svg>
+          </div>
+          <h3>Cloud Sync</h3>
+          <p>Sign in with Google to sync your dictionary and transcription history seamlessly across all your devices.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── How It Works ─── -->
+  <section class="section how-it-works" id="how-it-works">
+    <div class="container">
+      <div class="reveal" style="text-align:center;">
+        <p class="section-label">How It Works</p>
+        <h2 class="section-title">Three steps. Zero friction.</h2>
+        <p class="section-desc" style="margin: 0 auto;">From installation to your first transcription in under a minute.</p>
+      </div>
+      <div class="steps reveal">
+        <div class="step">
+          <h3>Set your hotkey</h3>
+          <p>Choose any keyboard shortcut. Ctrl+Shift+Space, a function key — whatever feels natural to you.</p>
+        </div>
+        <div class="step">
+          <h3>Hold &amp; speak</h3>
+          <p>Press and hold your hotkey anywhere on your system. A subtle indicator confirms it's listening.</p>
+        </div>
+        <div class="step">
+          <h3>Release &amp; paste</h3>
+          <p>Let go and the transcribed text is instantly typed wherever your cursor is — any app, any field.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Engines ─── -->
+  <section class="section" id="engines">
+  <div class="container">
+    <div class="reveal" style="text-align:center;">
+      <p class="section-label">Transcription Engines</p>
+      <h2 class="section-title">Choose how you transcribe.</h2>
+      <p class="section-desc" style="margin: 0 auto;">One engine card, three modes. Switch tabs to compare specs.</p>
+    </div>
+    <div class="engine-tabs-card reveal" id="engineTabs">
+      <div class="engine-tablist" role="tablist" aria-label="Engine modes">
+        <button class="engine-tab active" role="tab" aria-selected="true" aria-controls="engine-panel-web" id="engine-tab-web" data-target="engine-panel-web">Built-in</button>
+        <button class="engine-tab" role="tab" aria-selected="false" aria-controls="engine-panel-cloud" id="engine-tab-cloud" data-target="engine-panel-cloud">Cloud</button>
+        <button class="engine-tab" role="tab" aria-selected="false" aria-controls="engine-panel-local" id="engine-tab-local" data-target="engine-panel-local">Offline</button>
+      </div>
+      <article class="engine-panel active" role="tabpanel" id="engine-panel-web" aria-labelledby="engine-tab-web">
+        <span class="engine-tag">Built-in</span>
+        <h3 class="engine-name">Web Speech</h3>
+        <p>Uses your system's built-in speech recognition. Zero setup, works instantly - perfect for quick notes.</p>
+        <div class="req-meter">
+          <span class="on"></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="req-tiers">
+          <div class="req-tier">
+            <h4>Minimum</h4>
+            <ul>
+              <li>CPU: 2 cores / 4 threads</li>
+              <li>RAM: 4 GB</li>
+              <li>GPU: Not required</li>
+              <li>Storage: 1 GB free</li>
+            </ul>
+          </div>
+          <div class="req-tier">
+            <h4>Recommended</h4>
+            <ul>
+              <li>CPU: 4+ cores</li>
+              <li>RAM: 8 GB</li>
+              <li>GPU: Not required</li>
+              <li>Storage: 2 GB free SSD</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+      <article class="engine-panel" role="tabpanel" id="engine-panel-cloud" aria-labelledby="engine-tab-cloud" hidden>
+        <span class="engine-tag">Cloud</span>
+        <h3 class="engine-name">Groq Whisper</h3>
+        <p>Lightning-fast cloud transcription via Groq's API. Best accuracy with minimal latency - just add an API key.</p>
+        <div class="req-meter">
+          <span class="on"></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div class="req-tiers">
+          <div class="req-tier">
+            <h4>Minimum</h4>
+            <ul>
+              <li>CPU: 2 cores / 4 threads</li>
+              <li>RAM: 4 GB</li>
+              <li>GPU: Not required</li>
+              <li>Storage: 1 GB free</li>
+              <li>Internet: Stable upload + low packet loss</li>
+            </ul>
+          </div>
+          <div class="req-tier">
+            <h4>Recommended</h4>
+            <ul>
+              <li>CPU: 4+ cores</li>
+              <li>RAM: 8 GB</li>
+              <li>GPU: Not required</li>
+              <li>Storage: 2 GB free SSD</li>
+              <li>Internet: Low-latency route to API region</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+      <article class="engine-panel" role="tabpanel" id="engine-panel-local" aria-labelledby="engine-tab-local" hidden>
+        <span class="engine-tag">Offline</span>
+        <h3 class="engine-name">Local Whisper</h3>
+        <p>Run Whisper large-v3-turbo locally with Vulkan-capable acceleration. Complete privacy, no internet required.</p>
+        <div class="req-meter">
+          <span class="on"></span><span class="on"></span><span class="on"></span><span class="on"></span><span></span>
+        </div>
+        <div class="req-tiers">
+          <div class="req-tier">
+            <h4>Minimum</h4>
+            <ul>
+              <li>CPU: 4 cores / 8 threads</li>
+              <li>RAM: 8 GB</li>
+              <li>GPU: Vulkan 1.2 support, 4 GB VRAM</li>
+              <li>Storage: 4 GB free SSD</li>
+              <li>OS: Windows 10 22H2 or newer</li>
+            </ul>
+          </div>
+          <div class="req-tier">
+            <h4>Recommended</h4>
+            <ul>
+              <li>CPU: 8+ cores / 16 threads</li>
+              <li>RAM: 16 GB (32 GB for long subtitle jobs)</li>
+              <li>GPU: Vulkan-capable discrete GPU, 8 GB VRAM</li>
+              <li>Storage: 20 GB free NVMe SSD</li>
+              <li>OS: Windows 11 (latest stable)</li>
+            </ul>
+          </div>
+        </div>
+      </article>
+    </div>
+  </div>
+</section>
+
+  <section class="section languages-section">
+    <div class="container">
+      <div class="reveal" style="text-align:center;">
+        <p class="section-label">Languages</p>
+        <h2 class="section-title">20+ languages supported.</h2>
+        <p class="section-desc" style="margin:0 auto 32px;">English, Spanish, French, German, Japanese, Korean, Chinese, Vietnamese, Arabic, Hindi, and many more — with auto-detection.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;justify-content:center;max-width:600px;margin:0 auto;">
+          <span class="lang-pill">English</span>
+          <span class="lang-pill">Spanish</span>
+          <span class="lang-pill">French</span>
+          <span class="lang-pill">German</span>
+          <span class="lang-pill">Japanese</span>
+          <span class="lang-pill">Korean</span>
+          <span class="lang-pill">Chinese</span>
+          <span class="lang-pill">Vietnamese</span>
+          <span class="lang-pill">Portuguese</span>
+          <span class="lang-pill">Russian</span>
+          <span class="lang-pill">Arabic</span>
+          <span class="lang-pill">Hindi</span>
+          <span class="lang-pill">Italian</span>
+          <span class="lang-pill">Dutch</span>
+          <span class="lang-pill">Turkish</span>
+          <span class="lang-pill">Polish</span>
+          <span class="lang-pill">Swedish</span>
+          <span class="lang-pill">Thai</span>
+          <span class="lang-pill">Indonesian</span>
+          <span class="lang-pill">Ukrainian</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── CTA ─── -->
+  <section class="cta-section" id="download">
+    <div class="container reveal">
+      <h2>Ready to stop typing?</h2>
+      <p>Download Annotate for free and start transcribing in seconds.</p>
+      <div class="hero-actions" style="justify-content:center;">
+        <a href="#" class="btn-primary">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          Download for Windows
+        </a>
+        <a href="https://github.com" class="btn-secondary" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" width="18" height="18"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          View on GitHub
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── Footer ─── -->
+  <footer class="footer">
+    <div class="container">
+      <p>&copy; 2026 Annotate. Built with <a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a> &amp; <a href="https://github.com/ggerganov/whisper.cpp" target="_blank" rel="noopener">whisper.cpp</a></p>
+    </div>
+  </footer>
+
+  <style>
+    .lang-pill {
+      display: inline-block;
+      padding: 6px 14px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 100px;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: border-color 0.2s, color 0.2s;
+    }
+    .lang-pill:hover {
+      border-color: var(--border-hover);
+      color: var(--text);
+    }
+  </style>
+
+  <script>
+    // Scroll-based nav styling
+    const nav = document.getElementById('nav');
+    window.addEventListener('scroll', () => {
+      nav.classList.toggle('scrolled', window.scrollY > 40);
+    });
+
+    // Scroll reveal
+    const reveals = document.querySelectorAll('.reveal');
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+    reveals.forEach(el => observer.observe(el));
+
+    // Smooth scroll for anchor links
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+      a.addEventListener('click', e => {
+        e.preventDefault();
+        const target = document.querySelector(a.getAttribute('href'));
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+
+    // Engine tabs
+    const tabRoot = document.getElementById('engineTabs');
+    if (tabRoot) {
+      const tabs = tabRoot.querySelectorAll('.engine-tab');
+      const panels = tabRoot.querySelectorAll('.engine-panel');
+
+      const showPanel = (targetId) => {
+        panels.forEach(panel => {
+          const isActive = panel.id === targetId;
+          panel.hidden = !isActive;
+          panel.classList.toggle('active', isActive);
+        });
+        tabs.forEach(tab => {
+          const isActive = tab.dataset.target === targetId;
+          tab.classList.toggle('active', isActive);
+          tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+      };
+
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => showPanel(tab.dataset.target));
+      });
+    }
+  </script>
+
+</body>
+</html>

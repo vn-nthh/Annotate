@@ -1,0 +1,52 @@
+name: 'Release Annotate'
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Annotate v__VERSION__'
+          releaseBody: |
+            ## Annotate v__VERSION__
+
+            Push-to-talk voice transcription for Windows.
+
+            ### Installation
+            - **`.msi`** — Windows Installer (recommended)
+            - **`.exe`** — NSIS installer
+
+            > ⚠️ Windows SmartScreen may show a warning since the app is not code-signed yet. Click "More info" → "Run anyway" to proceed.
+          releaseDraft: true
+          prerelease: false
