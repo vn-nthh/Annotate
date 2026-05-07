@@ -14,3 +14,6 @@ scripts/gector-onnx/
 
 # Large zips
 *.zip
+
+# Dev documentation
+*.md
