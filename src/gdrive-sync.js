@@ -12,8 +12,27 @@ const { invoke } = window.__TAURI__.core;
 const { load } = window.__TAURI__.store;
 
 // ── Config ─────────────────────────────────────────────
-const CLIENT_ID = '714943573390-rjel4u4pd0ns6clf36993a08i4djqhqi.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
+// OAuth credentials are loaded from a local config file (not committed to git).
+// See oauth.config.json.example for the expected format.
+let CLIENT_ID = '';
+let CLIENT_SECRET = '';
+
+async function loadOAuthConfig() {
+  if (CLIENT_ID && CLIENT_SECRET) return;
+  try {
+    const resp = await fetch('oauth.config.json');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const config = await resp.json();
+    CLIENT_ID = config.client_id;
+    CLIENT_SECRET = config.client_secret;
+    if (!CLIENT_ID || !CLIENT_SECRET) {
+      throw new Error('Missing client_id or client_secret in oauth.config.json');
+    }
+  } catch (err) {
+    console.error('[OAuth] Failed to load oauth.config.json:', err);
+    throw new Error('Google Sign-In is not configured. Place oauth.config.json in the src/ folder. See oauth.config.json.example.');
+  }
+}
 const SCOPES = 'https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -81,6 +100,7 @@ export async function signIn() {
   emitStatus('syncing', 'Signing in\u2026');
 
   try {
+    await loadOAuthConfig();
     // 1. Tauri loopback OAuth
     const result = await invoke('google_oauth', {
       clientId: CLIENT_ID,
@@ -163,6 +183,7 @@ export function getUser() {
 
 // ── Token Management ───────────────────────────────────
 async function ensureValidToken() {
+  await loadOAuthConfig();
   if (accessToken && Date.now() < tokenExpiry) return;
   if (!refreshToken) throw new Error('No refresh token');
 

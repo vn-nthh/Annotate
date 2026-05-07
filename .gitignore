@@ -17,3 +17,6 @@ scripts/gector-onnx/
 
 # Dev documentation
 *.md
+
+# OAuth credentials (never commit secrets)
+oauth.config.json
