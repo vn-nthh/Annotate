@@ -15,8 +15,9 @@ scripts/gector-onnx/
 # Large zips
 *.zip
 
-# Dev documentation
+# Dev documentation (except README)
 *.md
+!README.md
 
 # OAuth credentials (never commit secrets)
 oauth.config.json
