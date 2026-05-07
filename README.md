@@ -1,5 +1,9 @@
 <p align="center">
-  <img src="src/annotate_logowithtext_white.svg" alt="Annotate" width="200" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="src/annotate_logowithtext_white.svg" />
+    <source media="(prefers-color-scheme: light)" srcset="src/annotate_logowithtext_solid.svg" />
+    <img src="src/annotate_logowithtext_solid.svg" alt="Annotate" width="200" />
+  </picture>
 </p>
 
 <p align="center">
