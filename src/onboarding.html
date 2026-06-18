@@ -47,6 +47,13 @@
               </span>
             </label>
             <label class="engine-card">
+              <input type="radio" name="onboarding-mode" value="azure-mai" />
+              <span>
+                <strong>MAI</strong>
+                <small>Microsoft Foundry</small>
+              </span>
+            </label>
+            <label class="engine-card">
               <input type="radio" name="onboarding-mode" value="local" />
               <span>
                 <strong>Local</strong>
@@ -80,7 +87,7 @@
         </div>
 
         <div class="onboarding-field onboarding-api" id="onboarding-api-section" style="display:none;">
-          <label class="setting-label" for="onboarding-api-input">Groq API Key</label>
+          <label class="setting-label" for="onboarding-api-input" id="onboarding-api-label">Groq API Key</label>
           <div class="input-wrap">
             <input
               type="password"
@@ -95,6 +102,28 @@
                 <circle cx="12" cy="12" r="3"/>
               </svg>
             </button>
+          </div>
+          <div id="onboarding-azure-section" style="display:none;">
+            <label class="setting-label" for="onboarding-azure-endpoint-input">Project Endpoint</label>
+            <div class="input-wrap">
+              <input
+                type="text"
+                id="onboarding-azure-endpoint-input"
+                placeholder="https://resource.services.ai.azure.com/api/projects/project"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </div>
+            <label class="setting-label" for="onboarding-azure-model-input">Model / Deployment</label>
+            <div class="input-wrap">
+              <input
+                type="text"
+                id="onboarding-azure-model-input"
+                placeholder="MAI-Transcribe-1.5"
+                spellcheck="false"
+                autocomplete="off"
+              />
+            </div>
           </div>
         </div>
 

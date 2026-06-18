@@ -17,8 +17,12 @@ let speechRecognition = null;
 const micSelect = document.getElementById('mic-select');
 const modeSelect = document.getElementById('mode-select');
 const apikeySection = document.getElementById('section-apikey');
+const apikeyLabel = document.getElementById('apikey-label');
 const apikeyInput = document.getElementById('apikey-input');
 const apikeyToggle = document.getElementById('apikey-toggle');
+const azureConfigSection = document.getElementById('section-azure-config');
+const azureEndpointInput = document.getElementById('azure-endpoint-input');
+const azureModelInput = document.getElementById('azure-model-input');
 const hotkeyBtn = document.getElementById('hotkey-btn');
 const hotkeyDisplay = document.getElementById('hotkey-display');
 const statusText = document.getElementById('status-text');
@@ -31,6 +35,9 @@ const dictAddBtn = document.getElementById('dict-add-btn');
 const dictList = document.getElementById('dict-list');
 const dictCount = document.getElementById('dict-count');
 const themeToggle = document.getElementById('theme-toggle');
+
+const AZURE_MAI_DEFAULT_ENDPOINT = 'https://catt-asr.services.ai.azure.com/api/projects/catt-asr';
+const AZURE_MAI_DEFAULT_MODEL = 'MAI-Transcribe-1.5';
 
 // Local whisper elements
 const sectionLocalWhisper = document.getElementById('section-local-whisper');
@@ -130,12 +137,7 @@ async function loadSavedSettings() {
   if (savedMode) {
     modeSelect.value = savedMode;
   }
-  toggleApiKeyVisibility(modeSelect.value);
-
-  const savedKey = await invoke('load_api_key').catch(() => null);
-  if (savedKey) {
-    apikeyInput.value = savedKey;
-  }
+  await toggleApiKeyVisibility(modeSelect.value);
 
   const savedHotkey = await store.get('hotkey');
   if (savedHotkey) {
@@ -219,13 +221,27 @@ function setupEventListeners() {
   modeSelect.addEventListener('change', async () => {
     const mode = modeSelect.value;
     await store.set('transcriptionMode', mode);
-    toggleApiKeyVisibility(mode);
+    await toggleApiKeyVisibility(mode);
   });
 
   // API key — saved to Windows Credential Manager (never plaintext on disk)
   apikeyInput.addEventListener('change', async () => {
-    await invoke('save_api_key', { key: apikeyInput.value }).catch(console.error);
+    if (modeSelect.value === 'azure-mai') {
+      await invoke('save_azure_api_key', { key: apikeyInput.value }).catch(console.error);
+    } else {
+      await invoke('save_api_key', { key: apikeyInput.value }).catch(console.error);
+    }
     setStatus('Key saved', false);
+  });
+
+  azureEndpointInput.addEventListener('change', async () => {
+    await store.set('azureMaiEndpoint', azureEndpointInput.value.trim());
+    setStatus('Endpoint saved', false);
+  });
+
+  azureModelInput.addEventListener('change', async () => {
+    await store.set('azureMaiModel', azureModelInput.value.trim());
+    setStatus('Model saved', false);
   });
 
   // API key visibility toggle
@@ -256,8 +272,14 @@ function setupEventListeners() {
 
 // ── API Key / Local Whisper Section Toggle ─────────────
 async function toggleApiKeyVisibility(mode) {
-  apikeySection.style.display = mode === 'groq' ? '' : 'none';
+  const isAzureMai = mode === 'azure-mai';
+  const usesApiKey = mode === 'groq' || isAzureMai;
+
+  apikeySection.style.display = usesApiKey ? '' : 'none';
+  azureConfigSection.style.display = isAzureMai ? '' : 'none';
   sectionLocalWhisper.style.display = mode === 'local' ? '' : 'none';
+
+  await loadProviderSettings(mode);
 
   if (mode === 'local') {
     // Show spinner immediately while we check / load
@@ -279,6 +301,26 @@ async function toggleApiKeyVisibility(mode) {
       }).catch(err => console.warn('[Whisper] Unload failed:', err));
     }
   }
+}
+
+async function loadProviderSettings(mode) {
+  if (mode === 'azure-mai') {
+    apikeyLabel.textContent = 'Foundry API Key';
+    apikeyInput.placeholder = 'Paste Foundry API key';
+    apikeyInput.value = await invoke('load_azure_api_key').catch(() => null) || '';
+    azureEndpointInput.value = await store.get('azureMaiEndpoint') || AZURE_MAI_DEFAULT_ENDPOINT;
+    azureModelInput.value = await store.get('azureMaiModel') || AZURE_MAI_DEFAULT_MODEL;
+    return;
+  }
+
+  if (mode === 'groq') {
+    apikeyLabel.textContent = 'Groq API Key';
+    apikeyInput.placeholder = 'Paste Groq API key';
+    apikeyInput.value = await invoke('load_api_key').catch(() => null) || '';
+    return;
+  }
+
+  apikeyInput.value = '';
 }
 
 /**
@@ -406,7 +448,7 @@ async function setupHotkeyListener() {
         setStatus('Speech failed', true);
         try { await invoke('hide_throbber'); } catch {}
       }
-    } else if (mode === 'local') {
+    } else if (mode === 'local' || mode === 'azure-mai') {
       try {
         startWavRecording();
       } catch (err) {
@@ -444,7 +486,7 @@ async function setupHotkeyListener() {
 
       if (mode === 'webspeech') {
         await stopWebSpeech();
-      } else if (mode === 'local') {
+      } else if (mode === 'local' || mode === 'azure-mai') {
         await stopWavRecording();
       } else {
         await stopMediaRecording();
@@ -605,6 +647,15 @@ function startMediaRecording() {
     });
 }
 
+function formatTimingMs(start) {
+  return `${(performance.now() - start).toFixed(1)}ms`;
+}
+
+function logTranscriptionTiming(scope, step, start, extra = '') {
+  const suffix = extra ? ` ${extra}` : '';
+  console.info(`[Timing][${scope}] ${step}: ${formatTimingMs(start)}${suffix}`);
+}
+
 function stopRmsAnalyser() {
   rmsAnalyserNode = null;
   if (rmsAudioCtx) {
@@ -621,6 +672,9 @@ async function stopMediaRecording() {
 
   return new Promise((resolve) => {
     mediaRecorder.onstop = async () => {
+      const totalTimer = performance.now();
+      console.info(`[Timing][groq] stop begin chunks=${audioChunks.length}`);
+
       try { mediaRecorder.stream.getTracks().forEach(t => t.stop()); } catch {}
 
       if (audioChunks.length === 0) {
@@ -644,6 +698,7 @@ async function stopMediaRecording() {
 
       setStatus('Transcribing…', false, true);
 
+      const encodeTimer = performance.now();
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
       const arrayBuffer = await blob.arrayBuffer();
       const bytes = new Uint8Array(arrayBuffer);
@@ -653,6 +708,7 @@ async function stopMediaRecording() {
         binary += String.fromCharCode(bytes[i]);
       }
       const base64 = btoa(binary);
+      logTranscriptionTiming('groq', 'webm blob+base64', encodeTimer, `bytes=${bytes.length} b64=${base64.length}`);
 
       const apiKey = apikeyInput.value;
       if (!apiKey) {
@@ -666,17 +722,23 @@ async function stopMediaRecording() {
       const initialPrompt = getDictionaryPrompt();
 
       try {
+        const invokeTimer = performance.now();
         const text = await invoke('transcribe_audio', {
           audioBase64: base64,
           apiKey: apiKey,
           initialPrompt: initialPrompt
         });
+        logTranscriptionTiming('groq', 'invoke transcribe_audio', invokeTimer);
 
         if (text && text.trim()) {
           let finalText = text.trim();
+          const grammarTimer = performance.now();
           finalText = normalizeTextForOutput(await maybeCorrectGrammar(finalText));
+          logTranscriptionTiming('groq', 'grammar cleanup', grammarTimer);
           setStatus('Pasting…', false);
+          const pasteTimer = performance.now();
           await invoke('paste_text', { text: finalText });
+          logTranscriptionTiming('groq', 'paste_text', pasteTimer);
           addHistoryEntry(finalText);
           setStatus('Done', false);
         } else {
@@ -687,6 +749,7 @@ async function stopMediaRecording() {
         setStatus('Transcribe failed', true);
       }
 
+      logTranscriptionTiming('groq', 'total stop-to-ready', totalTimer);
       mediaRecorder = null;
       resolve();
     };
@@ -1201,6 +1264,11 @@ function startWavRecording() {
 }
 
 async function stopWavRecording() {
+  const mode = modeSelect.value;
+  const timingScope = mode === 'azure-mai' ? 'azure-mai' : 'local';
+  const totalTimer = performance.now();
+  console.info(`[Timing][${timingScope}] stop begin buffers=${wavBuffers.length}`);
+
   if (!wavAudioContext || wavBuffers.length === 0) {
     cleanupWavRecording();
     setStatus('No audio', false);
@@ -1217,6 +1285,7 @@ async function stopWavRecording() {
 
   setStatus('Transcribing…', false, true);
 
+  const mergeTimer = performance.now();
   // Merge all buffers
   const totalLength = wavBuffers.reduce((sum, b) => sum + b.length, 0);
   const merged = new Float32Array(totalLength);
@@ -1225,44 +1294,107 @@ async function stopWavRecording() {
     merged.set(buf, offset);
     offset += buf.length;
   }
+  logTranscriptionTiming(timingScope, 'merge PCM buffers', mergeTimer, `samples=${totalLength}`);
+
+  const rmsTimer = performance.now();
+  if (calculatePeakRms(merged) < RMS_SILENCE_THRESHOLD) {
+    logTranscriptionTiming(timingScope, 'RMS gate', rmsTimer, 'silent');
+    cleanupWavRecording();
+    setStatus('No speech', false);
+    return;
+  }
+  logTranscriptionTiming(timingScope, 'RMS gate', rmsTimer, 'speech');
 
   // Encode as 16-bit PCM WAV
+  const encodeTimer = performance.now();
   const sampleRate = wavAudioContext ? wavAudioContext.sampleRate : 16000;
   const wavBytes = encodeWav(merged, sampleRate);
+  logTranscriptionTiming(timingScope, 'encode WAV', encodeTimer, `bytes=${wavBytes.byteLength} sampleRate=${sampleRate}`);
 
   cleanupWavRecording();
 
   // Convert to base64
+  const base64Timer = performance.now();
   const bytes = new Uint8Array(wavBytes);
   let binary = '';
   for (let i = 0; i < bytes.length; i++) {
     binary += String.fromCharCode(bytes[i]);
   }
   const base64 = btoa(binary);
+  logTranscriptionTiming(timingScope, 'base64 encode', base64Timer, `b64=${base64.length}`);
 
   // Build initial prompt from dictionary terms
   const initialPrompt = getDictionaryPrompt();
 
   try {
-    const text = await invoke('transcribe_audio_local', {
-      audioBase64: base64,
-      initialPrompt: initialPrompt || null
-    });
+    let text = '';
+
+    if (mode === 'azure-mai') {
+      const apiKey = apikeyInput.value || await invoke('load_azure_api_key').catch(() => null);
+      const endpoint = azureEndpointInput.value.trim() || AZURE_MAI_DEFAULT_ENDPOINT;
+      const model = azureModelInput.value.trim() || AZURE_MAI_DEFAULT_MODEL;
+      const language = liveLangSelect.value === 'auto' ? null : liveLangSelect.value;
+
+      if (!apiKey) {
+        setStatus('No API key', true);
+        return;
+      }
+
+      const invokeTimer = performance.now();
+      text = await invoke('transcribe_audio_azure', {
+        audioBase64: base64,
+        apiKey,
+        endpoint,
+        model,
+        initialPrompt: initialPrompt || null,
+        language,
+      });
+      logTranscriptionTiming('azure-mai', 'invoke transcribe_audio_azure', invokeTimer);
+    } else {
+      const invokeTimer = performance.now();
+      text = await invoke('transcribe_audio_local', {
+        audioBase64: base64,
+        initialPrompt: initialPrompt || null
+      });
+      logTranscriptionTiming('local', 'invoke transcribe_audio_local', invokeTimer);
+    }
 
     if (text && text.trim()) {
       let finalText = text.trim();
+      const grammarTimer = performance.now();
       finalText = normalizeTextForOutput(await maybeCorrectGrammar(finalText));
+      logTranscriptionTiming(timingScope, 'grammar cleanup', grammarTimer);
       setStatus('Pasting…', false);
+      const pasteTimer = performance.now();
       await invoke('paste_text', { text: finalText });
+      logTranscriptionTiming(timingScope, 'paste_text', pasteTimer);
       addHistoryEntry(finalText);
       setStatus('Done', false);
     } else {
       setStatus('No speech', false);
     }
   } catch (err) {
-    console.error('Local transcription failed:', err);
+    console.error('WAV transcription failed:', err);
     setStatus('Transcribe failed', true);
+  } finally {
+    logTranscriptionTiming(timingScope, 'total stop-to-ready', totalTimer);
   }
+}
+
+function calculatePeakRms(samples, windowSize = 512) {
+  let peak = 0;
+
+  for (let i = 0; i < samples.length; i += windowSize) {
+    const end = Math.min(i + windowSize, samples.length);
+    let sum = 0;
+    for (let j = i; j < end; j++) {
+      sum += samples[j] * samples[j];
+    }
+    const rms = Math.sqrt(sum / (end - i));
+    if (rms > peak) peak = rms;
+  }
+
+  return peak;
 }
 
 function cleanupWavRecording() {
@@ -1845,16 +1977,36 @@ async function generateSubtitles() {
   subResult.style.display = 'none';
 
   try {
-    const engine = modeSelect.value === 'local' ? 'local' : 'groq';
+    const selectedMode = modeSelect.value;
+    const engine = selectedMode === 'local'
+      ? 'local'
+      : selectedMode === 'azure-mai'
+        ? 'azure-mai'
+        : 'groq';
 
-    // Get API key if using Groq
+    // Get API key if using a cloud engine
     let apiKey = null;
+    let azureEndpoint = null;
+    let azureModel = null;
     if (engine === 'groq') {
       try {
-        apiKey = await invoke('load_api_key');
+        apiKey = apikeyInput.value || await invoke('load_api_key');
       } catch (e) {
         throw new Error('Groq API key not configured. Set it in Settings.');
       }
+    } else if (engine === 'azure-mai') {
+      try {
+        apiKey = apikeyInput.value || await invoke('load_azure_api_key');
+      } catch (e) {
+        throw new Error('Foundry API key not configured. Set it in Settings.');
+      }
+
+      azureEndpoint = azureEndpointInput.value.trim()
+        || await store.get('azureMaiEndpoint')
+        || AZURE_MAI_DEFAULT_ENDPOINT;
+      azureModel = azureModelInput.value.trim()
+        || await store.get('azureMaiModel')
+        || AZURE_MAI_DEFAULT_MODEL;
     }
 
     // Get dictionary terms as prompt
@@ -1874,6 +2026,8 @@ async function generateSubtitles() {
       filePath: subSelectedFile,
       engine: engine,
       apiKey: apiKey,
+      azureEndpoint: azureEndpoint,
+      azureModel: azureModel,
       prompt: prompt,
       language: subLang === 'auto' ? null : subLang,
     });

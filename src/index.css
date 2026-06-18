@@ -888,6 +888,14 @@ body::before {
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 
+#onboarding-azure-section {
+  margin-top: 14px;
+}
+
+#onboarding-azure-section .setting-label:not(:first-child) {
+  margin-top: 14px;
+}
+
 .input-wrap input::placeholder {
   color: var(--ink-faint);
 }

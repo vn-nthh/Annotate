@@ -7,8 +7,12 @@ const modelSelect = document.getElementById('onboarding-model-select');
 const localSection = document.getElementById('onboarding-local-section');
 const accelerationSelect = document.getElementById('onboarding-acceleration-select');
 const apiSection = document.getElementById('onboarding-api-section');
+const apiLabel = document.getElementById('onboarding-api-label');
 const apiInput = document.getElementById('onboarding-api-input');
 const apiToggle = document.getElementById('onboarding-api-toggle');
+const azureSection = document.getElementById('onboarding-azure-section');
+const azureEndpointInput = document.getElementById('onboarding-azure-endpoint-input');
+const azureModelInput = document.getElementById('onboarding-azure-model-input');
 const saveBtn = document.getElementById('onboarding-save');
 const skipBtn = document.getElementById('onboarding-skip');
 const summary = document.getElementById('onboarding-summary');
@@ -17,6 +21,9 @@ const explanationBody = document.getElementById('onboarding-explanation-body');
 const explanationSteps = document.getElementById('onboarding-explanation-steps');
 
 let store = null;
+
+const AZURE_MAI_DEFAULT_ENDPOINT = 'https://catt-asr.services.ai.azure.com/api/projects/catt-asr';
+const AZURE_MAI_DEFAULT_MODEL = 'MAI-Transcribe-1.5';
 
 const MODEL_OPTIONS = {
   webspeech: [
@@ -37,6 +44,12 @@ const MODEL_OPTIONS = {
     {
       value: 'distil-whisper-large-v3-en',
       label: 'Distil Whisper Large v3 EN'
+    }
+  ],
+  'azure-mai': [
+    {
+      value: AZURE_MAI_DEFAULT_MODEL,
+      label: 'MAI Transcribe 1.5'
     }
   ],
   local: [
@@ -64,6 +77,15 @@ const ONBOARDING_COPY = {
       'Go to console.groq.com and sign in or create an account.',
       'Open API Keys, create a new key, then paste it here.',
       'Keep the key private. You can skip now and add it later in Settings.'
+    ]
+  },
+  'azure-mai': {
+    title: 'Microsoft MAI transcription',
+    body: 'MAI-Transcribe-1.5 runs through your Azure AI Foundry project. Annotate stores your API key in Windows Credential Manager.',
+    steps: [
+      'Use the Foundry API key for your speech project.',
+      'Keep the project endpoint and deployment name with the defaults unless you move resources.',
+      'Dictionary terms are sent as Azure phrase-list biasing.'
     ]
   },
   local: {
@@ -122,8 +144,13 @@ function getModelLabel(mode, value) {
 function updateForMode(mode) {
   populateModelSelect(mode, modelSelect.value || getDefaultModel(mode));
 
-  apiSection.style.display = mode === 'groq' ? '' : 'none';
+  const isAzureMai = mode === 'azure-mai';
+  apiSection.style.display = mode === 'groq' || isAzureMai ? '' : 'none';
+  azureSection.style.display = isAzureMai ? '' : 'none';
   localSection.style.display = mode === 'local' ? '' : 'none';
+
+  apiLabel.textContent = isAzureMai ? 'Foundry API Key' : 'Groq API Key';
+  apiInput.placeholder = isAzureMai ? 'Paste Foundry API key' : 'Paste Groq API key';
 
   const copy = ONBOARDING_COPY[mode] || ONBOARDING_COPY.webspeech;
   const deviceLabel = micSelect.value
@@ -139,6 +166,22 @@ function updateForMode(mode) {
     li.textContent = step;
     explanationSteps.appendChild(li);
   });
+}
+
+async function loadOnboardingProviderSettings(mode) {
+  if (mode === 'azure-mai') {
+    apiInput.value = await invoke('load_azure_api_key').catch(() => null) || '';
+    azureEndpointInput.value = await store.get('azureMaiEndpoint') || AZURE_MAI_DEFAULT_ENDPOINT;
+    azureModelInput.value = await store.get('azureMaiModel') || AZURE_MAI_DEFAULT_MODEL;
+    return;
+  }
+
+  if (mode === 'groq') {
+    apiInput.value = await invoke('load_api_key').catch(() => null) || '';
+    return;
+  }
+
+  apiInput.value = '';
 }
 
 function fillDeviceSelect(devices, selectedValue = '') {
@@ -184,6 +227,12 @@ async function saveSettings() {
 
   if (mode === 'groq' && apiInput.value.trim()) {
     await invoke('save_api_key', { key: apiInput.value.trim() });
+  } else if (mode === 'azure-mai') {
+    if (apiInput.value.trim()) {
+      await invoke('save_azure_api_key', { key: apiInput.value.trim() });
+    }
+    await store.set('azureMaiEndpoint', azureEndpointInput.value.trim() || AZURE_MAI_DEFAULT_ENDPOINT);
+    await store.set('azureMaiModel', azureModelInput.value.trim() || AZURE_MAI_DEFAULT_MODEL);
   }
 
   await invoke('set_audio_device', { deviceId });
@@ -204,7 +253,11 @@ async function skipSetup() {
 
 function setupEvents() {
   document.querySelectorAll('input[name="onboarding-mode"]').forEach(radio => {
-    radio.addEventListener('change', () => updateForMode(getSelectedMode()));
+    radio.addEventListener('change', async () => {
+      const mode = getSelectedMode();
+      await loadOnboardingProviderSettings(mode);
+      updateForMode(mode);
+    });
   });
 
   micSelect.addEventListener('change', () => updateForMode(getSelectedMode()));
@@ -232,7 +285,11 @@ async function init() {
   const mode = savedMode || 'webspeech';
   const savedModel = await store.get(getModelKey(mode));
   const savedAcceleration = await store.get('localAcceleration');
-  const savedKey = await invoke('load_api_key').catch(() => null);
+  const savedKey = mode === 'azure-mai'
+    ? await invoke('load_azure_api_key').catch(() => null)
+    : await invoke('load_api_key').catch(() => null);
+  const savedAzureEndpoint = await store.get('azureMaiEndpoint');
+  const savedAzureModel = await store.get('azureMaiModel');
 
   if (savedAcceleration) {
     accelerationSelect.value = savedAcceleration;
@@ -240,6 +297,8 @@ async function init() {
   if (savedKey) {
     apiInput.value = savedKey;
   }
+  azureEndpointInput.value = savedAzureEndpoint || AZURE_MAI_DEFAULT_ENDPOINT;
+  azureModelInput.value = savedAzureModel || AZURE_MAI_DEFAULT_MODEL;
 
   setSelectedMode(mode);
   populateModelSelect(mode, savedModel);

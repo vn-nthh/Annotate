@@ -14,6 +14,7 @@ use serde::Serialize;
 use std::ptr::null_mut;
 #[cfg(not(target_os = "windows"))]
 use std::sync::{LazyLock, Mutex};
+use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(target_os = "windows")]
@@ -66,16 +67,39 @@ async fn transcribe_audio(audio_base64: String, api_key: String, initial_prompt:
         .map_err(|e| format!("Transcription failed: {}", e))
 }
 
+/// Transcribe audio using Microsoft MAI-Transcribe through Azure Speech in Foundry Tools.
+#[tauri::command]
+async fn transcribe_audio_azure(
+    audio_base64: String,
+    api_key: String,
+    endpoint: String,
+    model: Option<String>,
+    initial_prompt: Option<String>,
+    language: Option<String>,
+) -> Result<String, String> {
+    transcribe::transcribe_with_azure_mai(
+        &audio_base64,
+        &api_key,
+        &endpoint,
+        model.as_deref(),
+        initial_prompt.as_deref(),
+        language.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("Azure transcription failed: {}", e))
+}
+
 // ── API Key — Windows Credential Manager ─────────────
 
 const CREDENTIAL_SERVICE: &str = "Annotate";
-const CREDENTIAL_USER: &str = "GroqApiKey";
+const GROQ_CREDENTIAL_USER: &str = "GroqApiKey";
+const AZURE_CREDENTIAL_USER: &str = "AzureFoundryApiKey";
 
 /// Save the Groq API key to Windows Credential Manager.
 /// The key is never written to disk in plaintext.
 #[tauri::command]
 fn save_api_key(key: String) -> Result<(), String> {
-    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_USER)
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, GROQ_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
     entry.set_password(&key)
         .map_err(|e| format!("Failed to save credential: {}", e))
@@ -85,7 +109,28 @@ fn save_api_key(key: String) -> Result<(), String> {
 /// Returns None if no key has been saved yet.
 #[tauri::command]
 fn load_api_key() -> Result<Option<String>, String> {
-    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, CREDENTIAL_USER)
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, GROQ_CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Failed to load credential: {}", e)),
+    }
+}
+
+/// Save the Azure Foundry API key to Windows Credential Manager.
+#[tauri::command]
+fn save_azure_api_key(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, AZURE_CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    entry.set_password(&key)
+        .map_err(|e| format!("Failed to save credential: {}", e))
+}
+
+/// Load the Azure Foundry API key from Windows Credential Manager.
+#[tauri::command]
+fn load_azure_api_key() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, AZURE_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
     match entry.get_password() {
         Ok(key) => Ok(Some(key)),
@@ -203,9 +248,35 @@ async fn load_gec_model(app: AppHandle) -> Result<(), String> {
 /// Correct grammar in the given text
 #[tauri::command]
 async fn correct_grammar(text: String) -> Result<String, String> {
-    tokio::task::spawn_blocking(move || gec::correct_text(&text))
+    let total_start = Instant::now();
+    let input_chars = text.chars().count();
+    let result = tokio::task::spawn_blocking(move || {
+        let blocking_start = Instant::now();
+        let result = gec::correct_text(&text);
+        log::info!(
+            "[Timing][gec] rust correct_text blocking: {:.1}ms input_chars={}",
+            blocking_start.elapsed().as_secs_f64() * 1000.0,
+            input_chars
+        );
+        result
+    })
         .await
-        .map_err(|e| format!("Join error: {}", e))?
+        .map_err(|e| format!("Join error: {}", e))?;
+
+    match &result {
+        Ok(corrected) => log::info!(
+            "[Timing][gec] rust correct_grammar total: {:.1}ms status=ok output_chars={}",
+            total_start.elapsed().as_secs_f64() * 1000.0,
+            corrected.chars().count()
+        ),
+        Err(err) => log::info!(
+            "[Timing][gec] rust correct_grammar total: {:.1}ms status=err error={}",
+            total_start.elapsed().as_secs_f64() * 1000.0,
+            err
+        ),
+    }
+
+    result
 }
 
 /// Unload the GEC model from memory
@@ -280,6 +351,8 @@ async fn generate_subtitles(
     file_path: String,
     engine: String,
     api_key: Option<String>,
+    azure_endpoint: Option<String>,
+    azure_model: Option<String>,
     prompt: Option<String>,
     language: Option<String>,
 ) -> Result<Vec<subtitle::SrtEntry>, String> {
@@ -293,6 +366,8 @@ async fn generate_subtitles(
         &file_path,
         &engine,
         api_key.as_deref(),
+        azure_endpoint.as_deref(),
+        azure_model.as_deref(),
         prompt.as_deref(),
         language.as_deref(),
         &data_dir,
@@ -368,21 +443,68 @@ async fn download_cuda_runtime(app: AppHandle) -> Result<(), String> {
 /// Paste text by writing to clipboard and simulating Ctrl+V
 #[tauri::command]
 fn paste_text(text: String) -> Result<(), String> {
-    // Small delay to let the user's hotkey release propagate
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    let total_start = Instant::now();
+    let chars = text.chars().count();
 
-    paste_text_impl(&text)
+    // Small delay to let the user's hotkey release propagate
+    let release_delay_start = Instant::now();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    log::info!(
+        "[Timing][paste] hotkey release delay: {:.1}ms",
+        release_delay_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let result = paste_text_impl(&text);
+    log::info!(
+        "[Timing][paste] total: {:.1}ms chars={} status={}",
+        total_start.elapsed().as_secs_f64() * 1000.0,
+        chars,
+        if result.is_ok() { "ok" } else { "err" }
+    );
+
+    result
 }
 
 #[cfg(target_os = "windows")]
 fn paste_text_impl(text: &str) -> Result<(), String> {
+    let sanitize_start = Instant::now();
     let sanitized = sanitize_text_for_input(text);
+    log::info!(
+        "[Timing][paste] sanitize: {:.1}ms chars={}",
+        sanitize_start.elapsed().as_secs_f64() * 1000.0,
+        sanitized.chars().count()
+    );
+
+    let clipboard_start = Instant::now();
     set_clipboard_unicode_text(&sanitized)?;
+    log::info!(
+        "[Timing][paste] set clipboard: {:.1}ms",
+        clipboard_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let input_start = Instant::now();
     send_ctrl_v()?;
+    log::info!(
+        "[Timing][paste] send Ctrl+V: {:.1}ms",
+        input_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let paste_settle_start = Instant::now();
     std::thread::sleep(std::time::Duration::from_millis(220));
+    log::info!(
+        "[Timing][paste] paste settle delay: {:.1}ms",
+        paste_settle_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    let cleanup_start = Instant::now();
     if let Err(err) = clear_injected_clipboard_if_unchanged(&sanitized) {
         log::warn!("[Clipboard] cleanup failed: {}", err);
     }
+    log::info!(
+        "[Timing][paste] clipboard cleanup: {:.1}ms",
+        cleanup_start.elapsed().as_secs_f64() * 1000.0
+    );
+
     Ok(())
 }
 
@@ -723,6 +845,7 @@ pub fn run() {
             get_audio_devices,
             set_audio_device,
             transcribe_audio,
+            transcribe_audio_azure,
             paste_text,
             register_hotkey,
             show_throbber,
@@ -731,6 +854,8 @@ pub fn run() {
             quit_app,
             save_api_key,
             load_api_key,
+            save_azure_api_key,
+            load_azure_api_key,
             check_whisper_model,
             get_whisper_model_path,
             download_whisper_model,

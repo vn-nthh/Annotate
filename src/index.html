@@ -93,7 +93,7 @@
           <h2>Dictionary</h2>
           <span class="dict-count" id="dict-count"></span>
         </div>
-        <p class="panel-desc">Add key terms to improve transcription accuracy. These are sent as context to the Whisper model.</p>
+        <p class="panel-desc">Add key terms to improve transcription accuracy for supported engines.</p>
         <div class="dict-input-row">
           <input type="text" id="dict-input" placeholder="Add a term…" spellcheck="false" autocomplete="off" />
           <button id="dict-add-btn" class="dict-add-btn">Add</button>
@@ -225,6 +225,7 @@
             <select id="mode-select">
               <option value="webspeech">Web Speech (built-in)</option>
               <option value="groq">Groq Whisper (cloud)</option>
+              <option value="azure-mai">Microsoft MAI Transcribe 1.5 (preview)</option>
               <option value="local">Local Whisper (offline)</option>
             </select>
             <span class="select-arrow">
@@ -268,11 +269,11 @@
           </div>
         </section>
 
-        <!-- Groq API Key (conditional) -->
+        <!-- Cloud API Key (conditional) -->
         <div id="section-apikey" style="display: none;">
           <hr class="divider" id="divider-apikey" />
           <section class="setting-group">
-            <label class="setting-label" for="apikey-input">API Key</label>
+            <label class="setting-label" for="apikey-input" id="apikey-label">API Key</label>
             <div class="input-wrap">
               <input
                 type="password"
@@ -289,6 +290,32 @@
               </button>
             </div>
           </section>
+          <div id="section-azure-config" style="display:none;">
+            <section class="setting-group">
+              <label class="setting-label" for="azure-endpoint-input">Project Endpoint</label>
+              <div class="input-wrap">
+                <input
+                  type="text"
+                  id="azure-endpoint-input"
+                  placeholder="https://resource.services.ai.azure.com/api/projects/project"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </div>
+            </section>
+            <section class="setting-group">
+              <label class="setting-label" for="azure-model-input">Model / Deployment</label>
+              <div class="input-wrap">
+                <input
+                  type="text"
+                  id="azure-model-input"
+                  placeholder="MAI-Transcribe-1.5"
+                  spellcheck="false"
+                  autocomplete="off"
+                />
+              </div>
+            </section>
+          </div>
         </div>
 
         <!-- Local Whisper Model Status (conditional) -->

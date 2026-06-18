@@ -592,6 +592,8 @@ pub async fn generate_subtitles(
     file_path: &str,
     engine: &str,
     api_key: Option<&str>,
+    azure_endpoint: Option<&str>,
+    azure_model: Option<&str>,
     prompt: Option<&str>,
     language: Option<&str>,
     data_dir: &Path,
@@ -681,6 +683,19 @@ pub async fn generate_subtitles(
                 let key = api_key.ok_or("API key required for Groq engine")?;
                 transcribe_segments_groq(&audio_b64, key, prompt, language).await?
             }
+            "azure-mai" => {
+                let key = api_key.ok_or("API key required for Azure MAI engine")?;
+                let endpoint = azure_endpoint.ok_or("Azure Foundry endpoint required")?;
+                transcribe_segments_azure_mai(
+                    &audio_b64,
+                    key,
+                    endpoint,
+                    azure_model,
+                    prompt,
+                    language,
+                )
+                .await?
+            }
             _ => return Err(format!("Unknown engine: {}", engine)),
         };
 
@@ -733,6 +748,22 @@ async fn transcribe_segments_groq(
     crate::transcribe::transcribe_segments_with_groq(audio_b64, api_key, prompt, language)
         .await
         .map_err(|e| format!("Groq transcription failed: {}", e))
+}
+
+/// Transcribe audio via Azure MAI-Transcribe, returning timestamped segments.
+async fn transcribe_segments_azure_mai(
+    audio_b64: &str,
+    api_key: &str,
+    endpoint: &str,
+    model: Option<&str>,
+    prompt: Option<&str>,
+    language: Option<&str>,
+) -> Result<Vec<WhisperSegment>, String> {
+    crate::transcribe::transcribe_segments_with_azure_mai(
+        audio_b64, api_key, endpoint, model, prompt, language,
+    )
+    .await
+    .map_err(|e| format!("Azure MAI transcription failed: {}", e))
 }
 
 // ── Cleanup ────────────────────────────────────────────
