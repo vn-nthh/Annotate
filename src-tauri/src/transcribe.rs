@@ -90,6 +90,7 @@ pub async fn transcribe_with_groq(
     audio_base64: &str,
     api_key: &str,
     initial_prompt: Option<&str>,
+    language: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     // Decode base64 audio
     let audio_bytes = base64::engine::general_purpose::STANDARD.decode(audio_base64)?;
@@ -103,6 +104,15 @@ pub async fn transcribe_with_groq(
         .part("file", audio_part)
         .text("model", "whisper-large-v3-turbo")
         .text("response_format", "verbose_json");
+
+    let language = language.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(language) = language {
+        form = form.text("language", language.to_string());
+    }
+    log::info!(
+        "[Groq] transcription language={}",
+        language.unwrap_or("auto")
+    );
 
     // Add dictionary terms as initial_prompt for improved accuracy
     if let Some(prompt) = initial_prompt {

@@ -1,4 +1,5 @@
 mod audio;
+mod azure_stream;
 mod transcribe;
 mod whisper_local;
 mod google_auth;
@@ -61,8 +62,18 @@ fn set_audio_device(device_id: String) -> Result<(), String> {
 
 /// Transcribe audio using Groq Whisper API
 #[tauri::command]
-async fn transcribe_audio(audio_base64: String, api_key: String, initial_prompt: Option<String>) -> Result<String, String> {
-    transcribe::transcribe_with_groq(&audio_base64, &api_key, initial_prompt.as_deref())
+async fn transcribe_audio(
+    audio_base64: String,
+    api_key: String,
+    initial_prompt: Option<String>,
+    language: Option<String>,
+) -> Result<String, String> {
+    transcribe::transcribe_with_groq(
+        &audio_base64,
+        &api_key,
+        initial_prompt.as_deref(),
+        language.as_deref(),
+    )
         .await
         .map_err(|e| format!("Transcription failed: {}", e))
 }
@@ -87,6 +98,34 @@ async fn transcribe_audio_azure(
     )
     .await
     .map_err(|e| format!("Azure transcription failed: {}", e))
+}
+
+/// Start an experimental Voice Live session for streaming MAI transcription.
+#[tauri::command]
+async fn azure_stream_start(
+    endpoint: String,
+    api_key: String,
+    language: Option<String>,
+) -> Result<(), String> {
+    azure_stream::start(&endpoint, &api_key, language.as_deref()).await
+}
+
+/// Append a base64-encoded PCM16 chunk to the active Voice Live session.
+#[tauri::command]
+async fn azure_stream_send(audio_base64: String) -> Result<(), String> {
+    azure_stream::send_audio(&audio_base64).await
+}
+
+/// Commit streamed audio and wait for the completed transcript.
+#[tauri::command]
+async fn azure_stream_finish() -> Result<String, String> {
+    azure_stream::finish().await
+}
+
+/// Cancel and close an active Voice Live session.
+#[tauri::command]
+async fn azure_stream_cancel() {
+    azure_stream::cancel().await;
 }
 
 // ── API Key — Windows Credential Manager ─────────────
@@ -846,6 +885,10 @@ pub fn run() {
             set_audio_device,
             transcribe_audio,
             transcribe_audio_azure,
+            azure_stream_start,
+            azure_stream_send,
+            azure_stream_finish,
+            azure_stream_cancel,
             paste_text,
             register_hotkey,
             show_throbber,
