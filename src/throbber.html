@@ -38,6 +38,10 @@
       transition: transform 0.08s ease-out, border-radius 0.08s ease-out;
       will-change: transform;
     }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dot { transition: none; }
+    }
   </style>
 </head>
 <body>
@@ -57,40 +61,84 @@
     ];
 
     let audioCtx = null;
+    let source = null;
     let analyser = null;
     let dataArray = null;
     let stream = null;
     let animId = null;
+    let audioGeneration = 0;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
     // Phase offsets for each dot so they move in a wave
     const offsets = [0, 0.8, 1.6, 2.4];
 
-    // Tear down the current audio pipeline fully
-    function stopAudio() {
+    function resetDots() {
+      dots.forEach(dot => {
+        dot.style.transform = 'none';
+        dot.style.borderRadius = '50%';
+      });
+    }
+
+    // Tear down the current audio pipeline fully.
+    async function releaseAudio() {
       if (animId) { cancelAnimationFrame(animId); animId = null; }
       if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-      if (audioCtx) { try { audioCtx.close(); } catch {} audioCtx = null; }
+      if (source) { try { source.disconnect(); } catch {} source = null; }
+      const context = audioCtx;
+      audioCtx = null;
       analyser = null;
       dataArray = null;
+      if (context) { try { await context.close(); } catch {} }
+    }
+
+    function stopAudio() {
+      audioGeneration++;
+      releaseAudio();
     }
 
     // Acquire a FRESH stream (picks up current process default device)
     async function startListening() {
-      stopAudio(); // always clean up first
+      const generation = ++audioGeneration;
+      await releaseAudio();
+      if (generation !== audioGeneration || document.visibilityState !== 'visible') return;
+      if (reduceMotion.matches) {
+        resetDots();
+        return;
+      }
+
+      let nextStream = null;
+      let nextContext = null;
       try {
         // No deviceId — deliberately asks for the process default,
         // which is managed by Windows audio policy in the Rust backend
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        audioCtx = new AudioContext();
-        const source = audioCtx.createMediaStreamSource(stream);
-        analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.6;
-        source.connect(analyser);
+        nextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (generation !== audioGeneration || document.visibilityState !== 'visible') {
+          nextStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+
+        nextContext = new AudioContext();
+        const nextSource = nextContext.createMediaStreamSource(nextStream);
+        const nextAnalyser = nextContext.createAnalyser();
+        nextAnalyser.fftSize = 256;
+        nextAnalyser.smoothingTimeConstant = 0.6;
+        nextSource.connect(nextAnalyser);
+
+        stream = nextStream;
+        audioCtx = nextContext;
+        source = nextSource;
+        analyser = nextAnalyser;
+        nextStream = null;
+        nextContext = null;
         dataArray = new Uint8Array(analyser.frequencyBinCount);
-        animate();
+        animate(generation);
       } catch (e) {
+        if (nextStream) nextStream.getTracks().forEach(t => t.stop());
+        if (nextContext) { try { await nextContext.close(); } catch {} }
+        if (generation === audioGeneration) await releaseAudio();
         // Fallback: just do idle animation
-        animateIdle();
+        if (generation === audioGeneration && document.visibilityState === 'visible') {
+          animateIdle(generation);
+        }
       }
     }
 
@@ -105,7 +153,9 @@
       return sum / (bins * 255); // 0..1
     }
 
-    function animate() {
+    function animate(generation) {
+      if (generation !== audioGeneration || document.visibilityState !== 'visible' || !analyser) return;
+
       const energy = getEnergy();
       const t = performance.now() / 1000;
 
@@ -123,16 +173,18 @@
         dot.style.borderRadius = stretch > 1.15 ? '40%' : '50%';
       });
 
-      animId = requestAnimationFrame(animate);
+      animId = requestAnimationFrame(() => animate(generation));
     }
 
-    function animateIdle() {
+    function animateIdle(generation) {
+      if (generation !== audioGeneration || document.visibilityState !== 'visible') return;
+
       const t = performance.now() / 1000;
       dots.forEach((dot, i) => {
         const wave = Math.sin(t * 2.5 + offsets[i]);
         dot.style.transform = `translateY(${wave * 1.5}px)`;
       });
-      animId = requestAnimationFrame(animateIdle);
+      animId = requestAnimationFrame(() => animateIdle(generation));
     }
 
     // Re-acquire the stream every time the window is made visible.
@@ -145,6 +197,10 @@
       } else {
         stopAudio();
       }
+    });
+
+    reduceMotion.addEventListener('change', () => {
+      if (document.visibilityState === 'visible') startListening();
     });
 
     // Initial acquire in case the window is already visible when loaded
