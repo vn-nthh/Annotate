@@ -4,6 +4,7 @@ const { load } = window.__TAURI__.store;
 
 const micSelect = document.getElementById('onboarding-mic-select');
 const modelSelect = document.getElementById('onboarding-model-select');
+const modelSection = document.getElementById('onboarding-model-section');
 const localSection = document.getElementById('onboarding-local-section');
 const accelerationSelect = document.getElementById('onboarding-acceleration-select');
 const apiSection = document.getElementById('onboarding-api-section');
@@ -12,7 +13,6 @@ const apiInput = document.getElementById('onboarding-api-input');
 const apiToggle = document.getElementById('onboarding-api-toggle');
 const azureSection = document.getElementById('onboarding-azure-section');
 const azureEndpointInput = document.getElementById('onboarding-azure-endpoint-input');
-const azureModelInput = document.getElementById('onboarding-azure-model-input');
 const saveBtn = document.getElementById('onboarding-save');
 const skipBtn = document.getElementById('onboarding-skip');
 const summary = document.getElementById('onboarding-summary');
@@ -21,9 +21,6 @@ const explanationBody = document.getElementById('onboarding-explanation-body');
 const explanationSteps = document.getElementById('onboarding-explanation-steps');
 
 let store = null;
-
-const AZURE_MAI_DEFAULT_ENDPOINT = 'https://catt-asr.services.ai.azure.com/api/projects/catt-asr';
-const AZURE_MAI_DEFAULT_MODEL = 'MAI-Transcribe-1.5';
 
 const MODEL_OPTIONS = {
   webspeech: [
@@ -48,8 +45,8 @@ const MODEL_OPTIONS = {
   ],
   'azure-mai': [
     {
-      value: AZURE_MAI_DEFAULT_MODEL,
-      label: 'MAI Transcribe 1.5'
+      value: 'azure-mai',
+      label: 'MAI transcription'
     }
   ],
   local: [
@@ -81,10 +78,10 @@ const ONBOARDING_COPY = {
   },
   'azure-mai': {
     title: 'Microsoft MAI transcription',
-    body: 'MAI-Transcribe-1.5 runs through your Azure AI Foundry project. Annotate stores your API key in Windows Credential Manager.',
+    body: 'Microsoft MAI transcription runs through your Azure AI Foundry project. Annotate stores your API key in Windows Credential Manager.',
     steps: [
       'Use the Foundry API key for your speech project.',
-      'Keep the project endpoint and deployment name with the defaults unless you move resources.',
+      'Paste the project endpoint from your Azure AI Foundry project.',
       'Dictionary terms are sent as Azure phrase-list biasing.'
     ]
   },
@@ -147,7 +144,9 @@ function updateForMode(mode) {
   const isAzureMai = mode === 'azure-mai';
   apiSection.style.display = mode === 'groq' || isAzureMai ? '' : 'none';
   azureSection.style.display = isAzureMai ? '' : 'none';
+  modelSection.style.display = isAzureMai ? 'none' : '';
   localSection.style.display = mode === 'local' ? '' : 'none';
+  azureEndpointInput.required = isAzureMai;
 
   apiLabel.textContent = isAzureMai ? 'Foundry API Key' : 'Groq API Key';
   apiInput.placeholder = isAzureMai ? 'Paste Foundry API key' : 'Paste Groq API key';
@@ -157,7 +156,8 @@ function updateForMode(mode) {
     ? micSelect.options[micSelect.selectedIndex]?.textContent
     : 'Default system audio';
 
-  summary.textContent = `${deviceLabel} + ${getModelLabel(mode, modelSelect.value)}`;
+  const engineLabel = isAzureMai ? 'MAI transcription' : getModelLabel(mode, modelSelect.value);
+  summary.textContent = `${deviceLabel} + ${engineLabel}`;
   explanationTitle.textContent = copy.title;
   explanationBody.textContent = copy.body;
   explanationSteps.innerHTML = '';
@@ -171,8 +171,7 @@ function updateForMode(mode) {
 async function loadOnboardingProviderSettings(mode) {
   if (mode === 'azure-mai') {
     apiInput.value = await invoke('load_azure_api_key').catch(() => null) || '';
-    azureEndpointInput.value = await store.get('azureMaiEndpoint') || AZURE_MAI_DEFAULT_ENDPOINT;
-    azureModelInput.value = await store.get('azureMaiModel') || AZURE_MAI_DEFAULT_MODEL;
+    azureEndpointInput.value = await store.get('azureMaiEndpoint') || '';
     return;
   }
 
@@ -218,10 +217,20 @@ async function saveSettings() {
   const deviceId = micSelect.value;
   const model = modelSelect.value || getDefaultModel(mode);
   const acceleration = accelerationSelect.value || 'cuda';
+  const azureEndpoint = azureEndpointInput.value.trim();
+
+  if (mode === 'azure-mai' && !azureEndpoint) {
+    azureEndpointInput.setCustomValidity('Enter your Azure AI Foundry project endpoint.');
+    azureEndpointInput.reportValidity();
+    return;
+  }
+  azureEndpointInput.setCustomValidity('');
 
   await store.set('audioDeviceId', deviceId);
   await store.set('transcriptionMode', mode);
-  await store.set(getModelKey(mode), model);
+  if (mode !== 'azure-mai') {
+    await store.set(getModelKey(mode), model);
+  }
   await store.set('localAcceleration', acceleration);
   await store.set('onboardingComplete', true);
 
@@ -231,8 +240,7 @@ async function saveSettings() {
     if (apiInput.value.trim()) {
       await invoke('save_azure_api_key', { key: apiInput.value.trim() });
     }
-    await store.set('azureMaiEndpoint', azureEndpointInput.value.trim() || AZURE_MAI_DEFAULT_ENDPOINT);
-    await store.set('azureMaiModel', azureModelInput.value.trim() || AZURE_MAI_DEFAULT_MODEL);
+    await store.set('azureMaiEndpoint', azureEndpoint);
   }
 
   await invoke('set_audio_device', { deviceId });
@@ -289,7 +297,6 @@ async function init() {
     ? await invoke('load_azure_api_key').catch(() => null)
     : await invoke('load_api_key').catch(() => null);
   const savedAzureEndpoint = await store.get('azureMaiEndpoint');
-  const savedAzureModel = await store.get('azureMaiModel');
 
   if (savedAcceleration) {
     accelerationSelect.value = savedAcceleration;
@@ -297,8 +304,7 @@ async function init() {
   if (savedKey) {
     apiInput.value = savedKey;
   }
-  azureEndpointInput.value = savedAzureEndpoint || AZURE_MAI_DEFAULT_ENDPOINT;
-  azureModelInput.value = savedAzureModel || AZURE_MAI_DEFAULT_MODEL;
+  azureEndpointInput.value = savedAzureEndpoint || '';
 
   setSelectedMode(mode);
   populateModelSelect(mode, savedModel);

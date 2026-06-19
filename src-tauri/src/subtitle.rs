@@ -593,7 +593,6 @@ pub async fn generate_subtitles(
     engine: &str,
     api_key: Option<&str>,
     azure_endpoint: Option<&str>,
-    azure_model: Option<&str>,
     prompt: Option<&str>,
     language: Option<&str>,
     data_dir: &Path,
@@ -690,7 +689,6 @@ pub async fn generate_subtitles(
                     &audio_b64,
                     key,
                     endpoint,
-                    azure_model,
                     prompt,
                     language,
                 )
@@ -755,12 +753,11 @@ async fn transcribe_segments_azure_mai(
     audio_b64: &str,
     api_key: &str,
     endpoint: &str,
-    model: Option<&str>,
     prompt: Option<&str>,
     language: Option<&str>,
 ) -> Result<Vec<WhisperSegment>, String> {
     crate::transcribe::transcribe_segments_with_azure_mai(
-        audio_b64, api_key, endpoint, model, prompt, language,
+        audio_b64, api_key, endpoint, prompt, language,
     )
     .await
     .map_err(|e| format!("Azure MAI transcription failed: {}", e))

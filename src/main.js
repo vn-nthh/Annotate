@@ -22,7 +22,6 @@ const apikeyInput = document.getElementById('apikey-input');
 const apikeyToggle = document.getElementById('apikey-toggle');
 const azureConfigSection = document.getElementById('section-azure-config');
 const azureEndpointInput = document.getElementById('azure-endpoint-input');
-const azureModelInput = document.getElementById('azure-model-input');
 const hotkeyBtn = document.getElementById('hotkey-btn');
 const hotkeyDisplay = document.getElementById('hotkey-display');
 const statusText = document.getElementById('status-text');
@@ -35,9 +34,6 @@ const dictAddBtn = document.getElementById('dict-add-btn');
 const dictList = document.getElementById('dict-list');
 const dictCount = document.getElementById('dict-count');
 const themeToggle = document.getElementById('theme-toggle');
-
-const AZURE_MAI_DEFAULT_ENDPOINT = 'https://catt-asr.services.ai.azure.com/api/projects/catt-asr';
-const AZURE_MAI_DEFAULT_MODEL = 'MAI-Transcribe-1.5';
 
 // Local whisper elements
 const sectionLocalWhisper = document.getElementById('section-local-whisper');
@@ -239,11 +235,6 @@ function setupEventListeners() {
     setStatus('Endpoint saved', false);
   });
 
-  azureModelInput.addEventListener('change', async () => {
-    await store.set('azureMaiModel', azureModelInput.value.trim());
-    setStatus('Model saved', false);
-  });
-
   // API key visibility toggle
   apikeyToggle.addEventListener('click', () => {
     const isPassword = apikeyInput.type === 'password';
@@ -308,8 +299,7 @@ async function loadProviderSettings(mode) {
     apikeyLabel.textContent = 'Foundry API Key';
     apikeyInput.placeholder = 'Paste Foundry API key';
     apikeyInput.value = await invoke('load_azure_api_key').catch(() => null) || '';
-    azureEndpointInput.value = await store.get('azureMaiEndpoint') || AZURE_MAI_DEFAULT_ENDPOINT;
-    azureModelInput.value = await store.get('azureMaiModel') || AZURE_MAI_DEFAULT_MODEL;
+    azureEndpointInput.value = await store.get('azureMaiEndpoint') || '';
     return;
   }
 
@@ -1242,7 +1232,7 @@ let azureStreamGeneration = 0;
 
 function beginAzureStreaming() {
   const generation = ++azureStreamGeneration;
-  const endpoint = azureEndpointInput.value.trim() || AZURE_MAI_DEFAULT_ENDPOINT;
+  const endpoint = azureEndpointInput.value.trim();
   const language = liveLangSelect.value === 'auto' ? null : liveLangSelect.value;
   const apiKeyPromise = apikeyInput.value
     ? Promise.resolve(apikeyInput.value)
@@ -1458,13 +1448,17 @@ async function stopWavRecording() {
 
     if (mode === 'azure-mai') {
       const apiKey = apikeyInput.value || await invoke('load_azure_api_key').catch(() => null);
-      const endpoint = azureEndpointInput.value.trim() || AZURE_MAI_DEFAULT_ENDPOINT;
-      const model = azureModelInput.value.trim() || AZURE_MAI_DEFAULT_MODEL;
+      const endpoint = azureEndpointInput.value.trim();
       const language = liveLangSelect.value === 'auto' ? null : liveLangSelect.value;
 
       if (!apiKey) {
         await cancelAzureStreaming();
         setStatus('No API key', true);
+        return;
+      }
+      if (!endpoint) {
+        await cancelAzureStreaming();
+        setStatus('No endpoint', true);
         return;
       }
 
@@ -1482,7 +1476,6 @@ async function stopWavRecording() {
           audioBase64: base64,
           apiKey,
           endpoint,
-          model,
           initialPrompt: initialPrompt || null,
           language,
         });
@@ -2127,7 +2120,6 @@ async function generateSubtitles() {
     // Get API key if using a cloud engine
     let apiKey = null;
     let azureEndpoint = null;
-    let azureModel = null;
     if (engine === 'groq') {
       try {
         apiKey = apikeyInput.value || await invoke('load_api_key');
@@ -2142,11 +2134,10 @@ async function generateSubtitles() {
       }
 
       azureEndpoint = azureEndpointInput.value.trim()
-        || await store.get('azureMaiEndpoint')
-        || AZURE_MAI_DEFAULT_ENDPOINT;
-      azureModel = azureModelInput.value.trim()
-        || await store.get('azureMaiModel')
-        || AZURE_MAI_DEFAULT_MODEL;
+        || await store.get('azureMaiEndpoint');
+      if (!azureEndpoint) {
+        throw new Error('Azure Foundry endpoint not configured. Set it in Settings.');
+      }
     }
 
     // Get dictionary terms as prompt
@@ -2167,7 +2158,6 @@ async function generateSubtitles() {
       engine: engine,
       apiKey: apiKey,
       azureEndpoint: azureEndpoint,
-      azureModel: azureModel,
       prompt: prompt,
       language: subLang === 'auto' ? null : subLang,
     });

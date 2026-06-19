@@ -84,7 +84,6 @@ async fn transcribe_audio_azure(
     audio_base64: String,
     api_key: String,
     endpoint: String,
-    model: Option<String>,
     initial_prompt: Option<String>,
     language: Option<String>,
 ) -> Result<String, String> {
@@ -92,7 +91,6 @@ async fn transcribe_audio_azure(
         &audio_base64,
         &api_key,
         &endpoint,
-        model.as_deref(),
         initial_prompt.as_deref(),
         language.as_deref(),
     )
@@ -391,7 +389,6 @@ async fn generate_subtitles(
     engine: String,
     api_key: Option<String>,
     azure_endpoint: Option<String>,
-    azure_model: Option<String>,
     prompt: Option<String>,
     language: Option<String>,
 ) -> Result<Vec<subtitle::SrtEntry>, String> {
@@ -406,7 +403,6 @@ async fn generate_subtitles(
         &engine,
         api_key.as_deref(),
         azure_endpoint.as_deref(),
-        azure_model.as_deref(),
         prompt.as_deref(),
         language.as_deref(),
         &data_dir,

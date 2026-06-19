@@ -17,7 +17,7 @@
         <h1>Choose how Annotate listens.</h1>
         <p class="onboarding-lede">Pick an audio device and transcription model now, or skip and use system audio with WebSpeech.</p>
 
-        <div class="onboarding-field">
+        <div class="onboarding-field" id="onboarding-model-section">
           <label class="setting-label" for="onboarding-mic-select">Audio Device</label>
           <div class="select-wrap">
             <select id="onboarding-mic-select">
@@ -110,16 +110,6 @@
                 type="text"
                 id="onboarding-azure-endpoint-input"
                 placeholder="https://resource.services.ai.azure.com/api/projects/project"
-                spellcheck="false"
-                autocomplete="off"
-              />
-            </div>
-            <label class="setting-label" for="onboarding-azure-model-input">Model / Deployment</label>
-            <div class="input-wrap">
-              <input
-                type="text"
-                id="onboarding-azure-model-input"
-                placeholder="MAI-Transcribe-1.5"
                 spellcheck="false"
                 autocomplete="off"
               />

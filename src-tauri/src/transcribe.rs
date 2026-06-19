@@ -19,7 +19,7 @@ const NO_SPEECH_PROB_THRESHOLD: f64 = 0.6;
 const AVG_LOGPROB_THRESHOLD: f64 = -1.0;
 const COMPRESSION_RATIO_THRESHOLD: f64 = 2.4;
 const AZURE_SPEECH_API_VERSION: &str = "2025-10-15";
-const AZURE_MAI_DEFAULT_MODEL: &str = "mai-transcribe-1.5";
+const AZURE_MAI_MODEL: &str = "mai-transcribe-1.5";
 
 #[derive(Deserialize, Debug)]
 struct VerboseResponse {
@@ -254,7 +254,6 @@ pub async fn transcribe_with_azure_mai(
     audio_base64: &str,
     api_key: &str,
     endpoint: &str,
-    model: Option<&str>,
     initial_prompt: Option<&str>,
     language: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
@@ -270,7 +269,7 @@ pub async fn transcribe_with_azure_mai(
     );
 
     let form_start = Instant::now();
-    let form = build_azure_mai_form(audio_bytes, model, initial_prompt, language)?;
+    let form = build_azure_mai_form(audio_bytes, initial_prompt, language)?;
     let url = azure_transcribe_url(endpoint)?;
     log::info!(
         "[Timing][azure-mai] rust form build: {:.1}ms url={}",
@@ -338,7 +337,6 @@ pub async fn transcribe_segments_with_azure_mai(
     audio_base64: &str,
     api_key: &str,
     endpoint: &str,
-    model: Option<&str>,
     initial_prompt: Option<&str>,
     language: Option<&str>,
 ) -> Result<Vec<crate::subtitle::WhisperSegment>, Box<dyn std::error::Error + Send + Sync>> {
@@ -354,7 +352,7 @@ pub async fn transcribe_segments_with_azure_mai(
     );
 
     let form_start = Instant::now();
-    let form = build_azure_mai_form(audio_bytes, model, initial_prompt, language)?;
+    let form = build_azure_mai_form(audio_bytes, initial_prompt, language)?;
     let url = azure_transcribe_url(endpoint)?;
     log::info!(
         "[Timing][azure-mai-segments] rust form build: {:.1}ms url={}",
@@ -448,7 +446,6 @@ pub async fn transcribe_segments_with_azure_mai(
 
 fn build_azure_mai_form(
     audio_bytes: Vec<u8>,
-    model: Option<&str>,
     initial_prompt: Option<&str>,
     language: Option<&str>,
 ) -> Result<multipart::Form, Box<dyn std::error::Error + Send + Sync>> {
@@ -461,7 +458,7 @@ fn build_azure_mai_form(
         phrase_list: azure_phrase_list(initial_prompt),
         enhanced_mode: AzureEnhancedMode {
             enabled: true,
-            model: azure_model_name(model),
+            model: AZURE_MAI_MODEL.to_string(),
         },
     };
 
@@ -524,17 +521,6 @@ fn azure_transcribe_url(
     ))
 }
 
-fn azure_model_name(model: Option<&str>) -> String {
-    let candidate = model.map(str::trim).filter(|value| !value.is_empty());
-    match candidate {
-        Some(value) if value.eq_ignore_ascii_case(AZURE_MAI_DEFAULT_MODEL) => {
-            AZURE_MAI_DEFAULT_MODEL.to_string()
-        }
-        Some(value) => value.to_string(),
-        None => AZURE_MAI_DEFAULT_MODEL.to_string(),
-    }
-}
-
 fn azure_locales(language: Option<&str>) -> Option<Vec<String>> {
     let language = language?.trim();
     if language.is_empty() || language.eq_ignore_ascii_case("auto") {
@@ -587,13 +573,14 @@ mod tests {
 
     #[test]
     fn normalizes_foundry_project_endpoint_to_speech_transcribe_url() {
-        let url =
-            azure_transcribe_url("https://catt-asr.services.ai.azure.com/api/projects/catt-asr")
-                .unwrap();
+        let url = azure_transcribe_url(
+            "https://contoso.services.ai.azure.com/api/projects/speech-project",
+        )
+        .unwrap();
 
         assert_eq!(
             url,
-            "https://catt-asr.services.ai.azure.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+            "https://contoso.services.ai.azure.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
         );
     }
 
@@ -608,14 +595,6 @@ mod tests {
                 "Jessie".to_string(),
                 "Rehaan".to_string()
             ]
-        );
-    }
-
-    #[test]
-    fn normalizes_mai_display_name_to_api_model_name() {
-        assert_eq!(
-            azure_model_name(Some("MAI-Transcribe-1.5")),
-            "mai-transcribe-1.5"
         );
     }
 }
