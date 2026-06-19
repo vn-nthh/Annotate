@@ -21,6 +21,26 @@ const COMPRESSION_RATIO_THRESHOLD: f64 = 2.4;
 const AZURE_SPEECH_API_VERSION: &str = "2025-10-15";
 const AZURE_MAI_MODEL: &str = "mai-transcribe-1.5";
 
+/// Establish the DNS/TLS/HTTP2 connection while the user is still speaking.
+/// The subsequent transcription request reuses the connection from `HTTP_CLIENT`.
+pub async fn warm_azure_connection(
+    endpoint: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let start = Instant::now();
+    let mut url = reqwest::Url::parse(&azure_transcribe_url(endpoint)?)?;
+    url.set_path("/");
+    url.set_query(None);
+
+    let response = HTTP_CLIENT.head(url).send().await?;
+    log::info!(
+        "[Timing][azure-mai] connection warm-up: {:.1}ms status={} http={:?}",
+        start.elapsed().as_secs_f64() * 1000.0,
+        response.status(),
+        response.version()
+    );
+    Ok(())
+}
+
 #[derive(Deserialize, Debug)]
 struct VerboseResponse {
     segments: Option<Vec<Segment>>,
@@ -526,7 +546,33 @@ fn azure_locales(language: Option<&str>) -> Option<Vec<String>> {
     if language.is_empty() || language.eq_ignore_ascii_case("auto") {
         None
     } else {
-        Some(vec![language.to_string()])
+        // The UI stores compact language codes, while Azure's fast transcription
+        // API expects specific BCP-47 locales for its low-latency known-locale path.
+        let locale = match language.to_ascii_lowercase().as_str() {
+            "en" => "en-US",
+            "es" => "es-ES",
+            "fr" => "fr-FR",
+            "de" => "de-DE",
+            "it" => "it-IT",
+            "pt" => "pt-BR",
+            "nl" => "nl-NL",
+            "ru" => "ru-RU",
+            "ja" => "ja-JP",
+            "ko" => "ko-KR",
+            "zh" => "zh-CN",
+            "ar" => "ar-SA",
+            "hi" => "hi-IN",
+            "tr" => "tr-TR",
+            "pl" => "pl-PL",
+            "sv" => "sv-SE",
+            "vi" => "vi-VN",
+            "th" => "th-TH",
+            "id" => "id-ID",
+            "uk" => "uk-UA",
+            _ => language,
+        };
+
+        Some(vec![locale.to_string()])
     }
 }
 
@@ -596,5 +642,16 @@ mod tests {
                 "Rehaan".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn maps_compact_language_to_azure_locale() {
+        assert_eq!(azure_locales(Some("en")), Some(vec!["en-US".to_string()]));
+        assert_eq!(azure_locales(Some("vi")), Some(vec!["vi-VN".to_string()]));
+        assert_eq!(
+            azure_locales(Some("en-GB")),
+            Some(vec!["en-GB".to_string()])
+        );
+        assert_eq!(azure_locales(Some("auto")), None);
     }
 }

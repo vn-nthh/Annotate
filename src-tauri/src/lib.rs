@@ -98,6 +98,14 @@ async fn transcribe_audio_azure(
     .map_err(|e| format!("Azure transcription failed: {}", e))
 }
 
+/// Warm the shared Azure HTTP/2 connection before the REST upload is ready.
+#[tauri::command]
+async fn warm_azure_transcription(endpoint: String) -> Result<(), String> {
+    transcribe::warm_azure_connection(&endpoint)
+        .await
+        .map_err(|e| format!("Azure connection warm-up failed: {}", e))
+}
+
 /// Start an experimental Voice Live session for streaming MAI transcription.
 #[tauri::command]
 async fn azure_stream_start(
@@ -477,13 +485,15 @@ async fn download_cuda_runtime(app: AppHandle) -> Result<(), String> {
 
 /// Paste text by writing to clipboard and simulating Ctrl+V
 #[tauri::command]
-fn paste_text(text: String) -> Result<(), String> {
+fn paste_text(text: String, release_delay_ms: Option<u64>) -> Result<(), String> {
     let total_start = Instant::now();
     let chars = text.chars().count();
 
     // Small delay to let the user's hotkey release propagate
     let release_delay_start = Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(100));
+    std::thread::sleep(std::time::Duration::from_millis(
+        release_delay_ms.unwrap_or(100).min(500),
+    ));
     log::info!(
         "[Timing][paste] hotkey release delay: {:.1}ms",
         release_delay_start.elapsed().as_secs_f64() * 1000.0
@@ -524,21 +534,17 @@ fn paste_text_impl(text: &str) -> Result<(), String> {
         input_start.elapsed().as_secs_f64() * 1000.0
     );
 
-    let paste_settle_start = Instant::now();
-    std::thread::sleep(std::time::Duration::from_millis(220));
-    log::info!(
-        "[Timing][paste] paste settle delay: {:.1}ms",
-        paste_settle_start.elapsed().as_secs_f64() * 1000.0
-    );
-
-    let cleanup_start = Instant::now();
-    if let Err(err) = clear_injected_clipboard_if_unchanged(&sanitized) {
-        log::warn!("[Clipboard] cleanup failed: {}", err);
-    }
-    log::info!(
-        "[Timing][paste] clipboard cleanup: {:.1}ms",
-        cleanup_start.elapsed().as_secs_f64() * 1000.0
-    );
+    std::thread::spawn(move || {
+        let cleanup_start = Instant::now();
+        std::thread::sleep(std::time::Duration::from_millis(220));
+        if let Err(err) = clear_injected_clipboard_if_unchanged(&sanitized) {
+            log::warn!("[Clipboard] cleanup failed: {}", err);
+        }
+        log::info!(
+            "[Timing][paste] deferred clipboard cleanup: {:.1}ms",
+            cleanup_start.elapsed().as_secs_f64() * 1000.0
+        );
+    });
 
     Ok(())
 }
@@ -881,6 +887,7 @@ pub fn run() {
             set_audio_device,
             transcribe_audio,
             transcribe_audio_azure,
+            warm_azure_transcription,
             azure_stream_start,
             azure_stream_send,
             azure_stream_finish,

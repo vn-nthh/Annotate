@@ -429,6 +429,10 @@ async function setupHotkeyListener() {
 
     const mode = modeSelect.value;
 
+    if (mode === 'azure-mai') {
+      warmAzureRestConnection();
+    }
+
     if (mode === 'webspeech') {
       try {
         startWebSpeech();
@@ -1225,128 +1229,27 @@ let wavStream = null;
 let wavScriptNode = null;
 let wavSourceNode = null;
 let wavBuffers = [];
-let azureStreamStartPromise = null;
-let azureStreamSendChain = Promise.resolve();
-let azureStreamError = null;
-let azureStreamGeneration = 0;
+let lastAzureRestActivityAt = Number.NEGATIVE_INFINITY;
 
-function beginAzureStreaming() {
-  const generation = ++azureStreamGeneration;
+function warmAzureRestConnection() {
   const endpoint = azureEndpointInput.value.trim();
-  const language = liveLangSelect.value === 'auto' ? null : liveLangSelect.value;
-  const apiKeyPromise = apikeyInput.value
-    ? Promise.resolve(apikeyInput.value)
-    : invoke('load_azure_api_key').catch(() => null);
-  const startTimer = performance.now();
+  const now = performance.now();
 
-  azureStreamError = null;
-  azureStreamSendChain = Promise.resolve();
-  azureStreamStartPromise = apiKeyPromise
-    .then(apiKey => {
-      if (!apiKey) throw new Error('No Azure API key');
-      return invoke('azure_stream_start', { endpoint, apiKey, language });
-    })
-    .then(() => {
-      if (generation === azureStreamGeneration) {
-        logTranscriptionTiming('azure-mai-stream', 'session start', startTimer);
-      }
-    })
-    .catch(err => {
-      if (generation === azureStreamGeneration) {
-        azureStreamError = err;
-        console.warn('[AzureStream] Session start failed; REST fallback will be used:', err);
-      }
-      throw err;
-    });
+  // reqwest keeps idle connections pooled. Avoid an extra request while the
+  // existing HTTP/2 connection is likely to still be usable.
+  if (!endpoint || now - lastAzureRestActivityAt < 60_000) return;
+  lastAzureRestActivityAt = now;
 
-  // The stop path awaits this promise; attach a handler now to avoid an early
-  // unhandled-rejection report if setup fails while the user is still speaking.
-  azureStreamStartPromise.catch(() => {});
-}
-
-function queueAzureStreamSamples(samples) {
-  if (!azureStreamStartPromise) return;
-
-  const generation = azureStreamGeneration;
-  const startPromise = azureStreamStartPromise;
-  const audioBase64 = encodePcm16Base64(samples);
-  azureStreamSendChain = azureStreamSendChain.then(async () => {
-    if (generation !== azureStreamGeneration || azureStreamError) return;
-
-    try {
-      await startPromise;
-      if (generation !== azureStreamGeneration || azureStreamError) return;
-      await invoke('azure_stream_send', { audioBase64 });
-    } catch (err) {
-      if (generation === azureStreamGeneration && !azureStreamError) {
-        azureStreamError = err;
-        console.warn('[AzureStream] Audio send failed; REST fallback will be used:', err);
-      }
-    }
-  });
-}
-
-async function finishAzureStreaming() {
-  if (!azureStreamStartPromise) {
-    throw new Error('Voice Live session was not started');
-  }
-
-  await azureStreamStartPromise;
-  await azureStreamSendChain;
-  if (azureStreamError) throw azureStreamError;
-
-  const finishTimer = performance.now();
-  const text = await invoke('azure_stream_finish');
-  logTranscriptionTiming('azure-mai-stream', 'commit-to-transcript', finishTimer);
-  return text;
-}
-
-async function cancelAzureStreaming() {
-  const startPromise = azureStreamStartPromise;
-  ++azureStreamGeneration;
-  azureStreamStartPromise = null;
-  azureStreamSendChain = Promise.resolve();
-  azureStreamError = null;
-
-  if (startPromise) {
-    await startPromise.catch(() => {});
-  }
-  await invoke('azure_stream_cancel').catch(() => {});
-}
-
-function resetAzureStreamingState() {
-  ++azureStreamGeneration;
-  azureStreamStartPromise = null;
-  azureStreamSendChain = Promise.resolve();
-  azureStreamError = null;
-}
-
-function encodePcm16Base64(samples) {
-  const bytes = new Uint8Array(samples.length * 2);
-  const view = new DataView(bytes.buffer);
-
-  for (let i = 0; i < samples.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, samples[i]));
-    const pcm = clamped < 0 ? clamped * 0x8000 : clamped * 0x7FFF;
-    view.setInt16(i * 2, pcm, true);
-  }
-
-  let binary = '';
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
+  const timer = performance.now();
+  invoke('warm_azure_transcription', { endpoint })
+    .then(() => logTranscriptionTiming('azure-mai', 'connection warm-up', timer))
+    .catch(err => console.warn('[Azure MAI] Connection warm-up failed:', err));
 }
 
 function startWavRecording() {
   // Clean up any previous recording
   cleanupWavRecording();
   wavBuffers = [];
-
-  const mode = modeSelect.value;
-  if (mode === 'azure-mai') {
-    beginAzureStreaming();
-  }
 
   navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } })
     .then(stream => {
@@ -1360,9 +1263,6 @@ function startWavRecording() {
       wavScriptNode.onaudioprocess = (e) => {
         const data = e.inputBuffer.getChannelData(0);
         wavBuffers.push(new Float32Array(data));
-        if (mode === 'azure-mai') {
-          queueAzureStreamSamples(data);
-        }
       };
 
       wavSourceNode.connect(wavScriptNode);
@@ -1370,9 +1270,6 @@ function startWavRecording() {
     })
     .catch(err => {
       console.error('WAV recording failed:', err);
-      if (mode === 'azure-mai') {
-        cancelAzureStreaming();
-      }
       setStatus('Mic denied', true);
       isRecording = false;
     });
@@ -1386,7 +1283,6 @@ async function stopWavRecording() {
 
   if (!wavAudioContext || wavBuffers.length === 0) {
     cleanupWavRecording();
-    if (mode === 'azure-mai') await cancelAzureStreaming();
     setStatus('No audio', false);
     return;
   }
@@ -1416,7 +1312,6 @@ async function stopWavRecording() {
   if (calculatePeakRms(merged) < RMS_SILENCE_THRESHOLD) {
     logTranscriptionTiming(timingScope, 'RMS gate', rmsTimer, 'silent');
     cleanupWavRecording();
-    if (mode === 'azure-mai') await cancelAzureStreaming();
     setStatus('No speech', false);
     return;
   }
@@ -1452,26 +1347,16 @@ async function stopWavRecording() {
       const language = liveLangSelect.value === 'auto' ? null : liveLangSelect.value;
 
       if (!apiKey) {
-        await cancelAzureStreaming();
         setStatus('No API key', true);
         return;
       }
       if (!endpoint) {
-        await cancelAzureStreaming();
         setStatus('No endpoint', true);
         return;
       }
 
+      const invokeTimer = performance.now();
       try {
-        text = await finishAzureStreaming();
-        if (!text || !text.trim()) {
-          throw new Error('Voice Live returned an empty transcript');
-        }
-      } catch (streamErr) {
-        console.warn('[AzureStream] Streaming failed; using MAI 1.5 REST fallback:', streamErr);
-        await cancelAzureStreaming();
-
-        const invokeTimer = performance.now();
         text = await invoke('transcribe_audio_azure', {
           audioBase64: base64,
           apiKey,
@@ -1479,10 +1364,10 @@ async function stopWavRecording() {
           initialPrompt: initialPrompt || null,
           language,
         });
-        logTranscriptionTiming('azure-mai', 'REST fallback', invokeTimer);
       } finally {
-        resetAzureStreamingState();
+        lastAzureRestActivityAt = performance.now();
       }
+      logTranscriptionTiming('azure-mai', 'REST transcription', invokeTimer);
     } else {
       const invokeTimer = performance.now();
       text = await invoke('transcribe_audio_local', {
@@ -1499,7 +1384,10 @@ async function stopWavRecording() {
       logTranscriptionTiming(timingScope, 'grammar cleanup', grammarTimer);
       setStatus('Pasting…', false);
       const pasteTimer = performance.now();
-      await invoke('paste_text', { text: finalText });
+      await invoke('paste_text', {
+        text: finalText,
+        releaseDelayMs: mode === 'azure-mai' ? 0 : null,
+      });
       logTranscriptionTiming(timingScope, 'paste_text', pasteTimer);
       addHistoryEntry(finalText);
       setStatus('Done', false);
