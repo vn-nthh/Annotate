@@ -7,7 +7,7 @@ use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValu
 
 const VOICE_LIVE_API_VERSION: &str = "2026-04-10";
 const VOICE_LIVE_SESSION_MODEL: &str = "gpt-4.1";
-const VOICE_LIVE_TRANSCRIPTION_MODEL: &str = "mai-transcribe-1";
+const VOICE_LIVE_TRANSCRIPTION_MODEL: &str = "mai-transcribe-1.5";
 
 struct AzureStreamSession {
     sender: mpsc::UnboundedSender<Message>,
