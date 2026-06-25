@@ -4,6 +4,11 @@ const { load } = window.__TAURI__.store;
 const { getCurrentWindow } = window.__TAURI__.window;
 
 import * as sync from './gdrive-sync.js';
+import {
+  normalizeDictionaryStore,
+  normalizeHistoryStore,
+  normalizeKey,
+} from './sync-merge.mjs';
 
 // ── State ──────────────────────────────────────────────
 let store = null;
@@ -755,7 +760,7 @@ async function stopMediaRecording() {
 }
 
 // ── Dictionary (tombstone-aware) ───────────────────────
-// Storage format: { terms: string[], deleted: string[] }
+// Storage format: versioned live values and tombstones with operation timestamps.
 // Tombstones (deleted[]) ensure deletions propagate across synced devices.
 const DICT_KEY = 'annotate_dictionary';
 
@@ -765,17 +770,11 @@ const DICT_KEY = 'annotate_dictionary';
  */
 function getDictStore() {
   try {
-    const raw = JSON.parse(localStorage.getItem(DICT_KEY) || '{"terms":[],"deleted":[]}');
-    // Migrate from old string[] format
-    if (Array.isArray(raw)) {
-      return { terms: raw, deleted: [] };
-    }
-    return {
-      terms: Array.isArray(raw.terms) ? raw.terms : [],
-      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
-    };
+    return normalizeDictionaryStore(JSON.parse(
+      localStorage.getItem(DICT_KEY) || '{"terms":[],"deleted":[]}',
+    ));
   } catch {
-    return { terms: [], deleted: [] };
+    return normalizeDictionaryStore(null);
   }
 }
 
@@ -785,7 +784,7 @@ function saveDictStore(store) {
 
 /** Convenience: just the terms (for prompt building, rendering, etc.) */
 function getDictionary() {
-  return getDictStore().terms;
+  return getDictStore().terms.map(term => term.value);
 }
 
 function getDictionaryPrompt() {
@@ -799,19 +798,19 @@ function addDictTerm() {
   if (!term) return;
 
   const store = getDictStore();
-  const key = term.toLowerCase();
+  const key = normalizeKey(term);
 
   // Avoid duplicates
-  if (store.terms.some(t => t.toLowerCase() === key)) {
+  if (store.terms.some(item => normalizeKey(item.value) === key)) {
     dictInput.value = '';
     return;
   }
 
-  store.terms.push(term);
-  store.terms.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  store.terms.push({ value: term, updatedAt: Date.now() });
+  store.terms.sort((a, b) => a.value.localeCompare(b.value, undefined, { sensitivity: 'base' }));
 
   // Lift tombstone if re-adding a previously deleted term
-  store.deleted = store.deleted.filter(t => t.toLowerCase() !== key);
+  store.deleted = store.deleted.filter(item => normalizeKey(item.value) !== key);
 
   saveDictStore(store);
   dictInput.value = '';
@@ -824,11 +823,9 @@ function removeDictTerm(index) {
   const removed = store.terms.splice(index, 1)[0];
 
   if (removed) {
-    const key = removed.toLowerCase();
-    // Add to tombstone list (avoid duplicate tombstones)
-    if (!store.deleted.some(t => t.toLowerCase() === key)) {
-      store.deleted.push(removed);
-    }
+    const key = normalizeKey(removed.value);
+    store.deleted = store.deleted.filter(item => normalizeKey(item.value) !== key);
+    store.deleted.push({ value: removed.value, deletedAt: Date.now() });
   }
 
   saveDictStore(store);
@@ -898,7 +895,7 @@ function normalizeTextForOutput(text) {
 }
 
 // ── History (tombstone-aware) ──────────────────────────
-// Storage format: { entries: {text,time}[], deleted: {text,time}[] }
+// Storage format: entries and tombstones with operation timestamps.
 // Tombstones (deleted[]) ensure deletions propagate across synced devices.
 const HISTORY_KEY = 'annotate_history';
 const HISTORY_MAX = 50;
@@ -909,17 +906,11 @@ const HISTORY_MAX = 50;
  */
 function getHistoryStore() {
   try {
-    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '{"entries":[],"deleted":[]}');
-    // Migrate from old flat array format
-    if (Array.isArray(raw)) {
-      return { entries: raw, deleted: [] };
-    }
-    return {
-      entries: Array.isArray(raw.entries) ? raw.entries : [],
-      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
-    };
+    return normalizeHistoryStore(JSON.parse(
+      localStorage.getItem(HISTORY_KEY) || '{"entries":[],"deleted":[]}',
+    ));
   } catch {
-    return { entries: [], deleted: [] };
+    return normalizeHistoryStore(null);
   }
 }
 
@@ -934,13 +925,15 @@ function getHistory() {
 
 function addHistoryEntry(text) {
   const store = getHistoryStore();
-  const key = text.trim().toLowerCase();
+  const key = normalizeKey(text);
+  const now = Date.now();
 
-  store.entries.unshift({ text, time: Date.now() });
+  store.entries = store.entries.filter(entry => normalizeKey(entry.text) !== key);
+  store.entries.unshift({ text, time: now, updatedAt: now });
   if (store.entries.length > HISTORY_MAX) store.entries.length = HISTORY_MAX;
 
   // Lift tombstone if re-adding a previously deleted entry
-  store.deleted = store.deleted.filter(e => e.text.trim().toLowerCase() !== key);
+  store.deleted = store.deleted.filter(entry => normalizeKey(entry.text) !== key);
 
   saveHistoryStore(store);
   renderHistory();
@@ -952,11 +945,9 @@ function removeHistoryEntry(index) {
   const removed = store.entries.splice(index, 1)[0];
 
   if (removed) {
-    const key = removed.text.trim().toLowerCase();
-    // Add to tombstone list (avoid duplicate tombstones)
-    if (!store.deleted.some(e => e.text.trim().toLowerCase() === key)) {
-      store.deleted.push({ text: removed.text, time: removed.time });
-    }
+    const key = normalizeKey(removed.text);
+    store.deleted = store.deleted.filter(entry => normalizeKey(entry.text) !== key);
+    store.deleted.push({ text: removed.text, time: removed.time, deletedAt: Date.now() });
   }
 
   saveHistoryStore(store);
@@ -966,13 +957,13 @@ function removeHistoryEntry(index) {
 
 function clearHistory() {
   const store = getHistoryStore();
+  const deletedAt = Date.now();
 
   // Tombstone every entry so the clear propagates across devices
   for (const entry of store.entries) {
-    const key = entry.text.trim().toLowerCase();
-    if (!store.deleted.some(e => e.text.trim().toLowerCase() === key)) {
-      store.deleted.push({ text: entry.text, time: entry.time });
-    }
+    const key = normalizeKey(entry.text);
+    store.deleted = store.deleted.filter(item => normalizeKey(item.text) !== key);
+    store.deleted.push({ text: entry.text, time: entry.time, deletedAt });
   }
   store.entries = [];
 

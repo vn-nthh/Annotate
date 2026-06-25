@@ -28,6 +28,7 @@ const FFMPEG_FILENAME: &str = "ffmpeg.exe";
 
 /// FFmpeg download URL (gyan.dev essentials build — Windows x64, ~80 MB zip)
 const FFMPEG_URL: &str = "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/ffmpeg/ffmpeg.exe";
+const FFMPEG_SHA256: &str = "1a65d5b0b10d8d9a81d2824a3538046a40ed3607c906b335a166add87613f705";
 
 // SRT formatting constants
 const MAX_CHARS_PER_LINE: usize = 42;
@@ -79,7 +80,7 @@ fn ffmpeg_path(data_dir: &Path) -> PathBuf {
 
 /// Check if ffmpeg is available.
 pub fn is_ffmpeg_available(data_dir: &Path) -> bool {
-    ffmpeg_path(data_dir).exists()
+    crate::download::verify_file_sha256(&ffmpeg_path(data_dir), FFMPEG_SHA256)
 }
 
 /// Download ffmpeg if not already present.
@@ -88,7 +89,7 @@ pub async fn ensure_ffmpeg(
     progress_cb: impl Fn(u64, u64) + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = ffmpeg_path(data_dir);
-    if path.exists() {
+    if is_ffmpeg_available(data_dir) {
         log::info!("[Subtitle] FFmpeg already available at {:?}", path);
         return Ok(());
     }
@@ -100,24 +101,14 @@ pub async fn ensure_ffmpeg(
         .timeout(std::time::Duration::from_secs(600))
         .build()?;
 
-    let resp = client.get(FFMPEG_URL).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("FFmpeg download failed: HTTP {}", resp.status()).into());
-    }
-
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut file = std::fs::File::create(&path)?;
-
-    let mut stream = resp.bytes_stream();
-    use futures_util::StreamExt;
-    use std::io::Write;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk)?;
-        downloaded += chunk.len() as u64;
-        progress_cb(downloaded, total);
-    }
+    let downloaded = crate::download::download_verified(
+        &client,
+        FFMPEG_URL,
+        &path,
+        FFMPEG_SHA256,
+        progress_cb,
+    )
+    .await?;
 
     log::info!("[Subtitle] FFmpeg downloaded: {} bytes", downloaded);
     Ok(())

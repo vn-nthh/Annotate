@@ -11,23 +11,26 @@
 const { invoke } = window.__TAURI__.core;
 const { load } = window.__TAURI__.store;
 
+import {
+  mergeDictionaries,
+  mergeHistories,
+  normalizeDictionaryStore,
+  normalizeHistoryStore,
+} from './sync-merge.mjs';
+
 // ── Config ─────────────────────────────────────────────
-// OAuth credentials are loaded from a local config file (not committed to git).
+// The desktop OAuth client ID is public configuration. No client secret is used.
 // See oauth.config.json.example for the expected format.
 let CLIENT_ID = '';
-let CLIENT_SECRET = '';
 
 async function loadOAuthConfig() {
-  if (CLIENT_ID && CLIENT_SECRET) return;
+  if (CLIENT_ID) return;
   try {
     const resp = await fetch('oauth.config.json');
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const config = await resp.json();
     CLIENT_ID = config.client_id;
-    CLIENT_SECRET = config.client_secret;
-    if (!CLIENT_ID || !CLIENT_SECRET) {
-      throw new Error('Missing client_id or client_secret in oauth.config.json');
-    }
+    if (!CLIENT_ID) throw new Error('Missing client_id in oauth.config.json');
   } catch (err) {
     console.error('[OAuth] Failed to load oauth.config.json:', err);
     throw new Error('Google Sign-In is not configured. Place oauth.config.json in the src/ folder. See oauth.config.json.example.');
@@ -45,7 +48,7 @@ const HISTORY_FILE = 'annotate_history.json';
 // ── State ──────────────────────────────────────────────
 let store = null;
 let accessToken = null;
-let refreshToken = null;
+let hasRefreshToken = false;
 let tokenExpiry = 0;
 let userInfo = null;
 let syncInProgress = false;
@@ -72,13 +75,18 @@ function emitSignIn(signedIn, user) {
 export async function initSync() {
   store = await load('settings.json', { autoSave: true });
 
-  // Restore saved tokens
-  accessToken = await store.get('gd_access_token');
-  refreshToken = await store.get('gd_refresh_token');
-  tokenExpiry = (await store.get('gd_token_expiry')) || 0;
+  // Migrate legacy plaintext credentials once, then remove them from settings.
+  const legacyRefreshToken = await store.get('gd_refresh_token');
+  if (legacyRefreshToken) {
+    await invoke('migrate_google_refresh_token', { token: legacyRefreshToken });
+  }
+  await store.delete('gd_access_token');
+  await store.delete('gd_refresh_token');
+  await store.delete('gd_token_expiry');
+  hasRefreshToken = await invoke('has_google_refresh_token');
   userInfo = await store.get('gd_user_info');
 
-  if (refreshToken) {
+  if (hasRefreshToken) {
     emitSignIn(true, userInfo);
     // Try to refresh and sync
     try {
@@ -101,51 +109,27 @@ export async function signIn() {
 
   try {
     await loadOAuthConfig();
-    // 1. Tauri loopback OAuth
-    const result = await invoke('google_oauth', {
+    // Rust owns state, PKCE, token exchange, and refresh-token storage.
+    const tokens = await invoke('google_oauth', {
       clientId: CLIENT_ID,
       scopes: SCOPES,
     });
-
-    // 2. Exchange auth code for tokens
-    const tokenResp = await fetch('https://oauth2.googleapis.com/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        code: result.code,
-        client_id: CLIENT_ID,
-        client_secret: CLIENT_SECRET,
-        redirect_uri: result.redirect_uri,
-        grant_type: 'authorization_code',
-      }),
-    });
-
-    if (!tokenResp.ok) {
-      const err = await tokenResp.json().catch(() => ({}));
-      throw new Error(err.error_description || err.error || `HTTP ${tokenResp.status}`);
-    }
-
-    const tokens = await tokenResp.json();
     accessToken = tokens.access_token;
-    refreshToken = tokens.refresh_token || refreshToken;
     tokenExpiry = Date.now() + (tokens.expires_in - 60) * 1000;
+    hasRefreshToken = true;
 
-    // Save tokens
-    await store.set('gd_access_token', accessToken);
-    await store.set('gd_refresh_token', refreshToken);
-    await store.set('gd_token_expiry', tokenExpiry);
-
-    // 3. Fetch user profile
+    // Fetch user profile.
     const profileResp = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
+    if (!profileResp.ok) throw new Error(`Google profile request failed: ${profileResp.status}`);
     userInfo = await profileResp.json();
     await store.set('gd_user_info', userInfo);
 
     emitSignIn(true, userInfo);
     emitStatus('synced', 'Signed in');
 
-    // 4. Initial sync
+    // Initial sync.
     await syncNow();
     startAutoSync();
 
@@ -159,10 +143,11 @@ export async function signIn() {
 
 export async function signOut() {
   accessToken = null;
-  refreshToken = null;
+  hasRefreshToken = false;
   tokenExpiry = 0;
   userInfo = null;
 
+  await invoke('clear_google_refresh_token');
   await store.delete('gd_access_token');
   await store.delete('gd_refresh_token');
   await store.delete('gd_token_expiry');
@@ -174,7 +159,7 @@ export async function signOut() {
 }
 
 export function isSignedIn() {
-  return !!refreshToken;
+  return hasRefreshToken;
 }
 
 export function getUser() {
@@ -185,34 +170,16 @@ export function getUser() {
 async function ensureValidToken() {
   await loadOAuthConfig();
   if (accessToken && Date.now() < tokenExpiry) return;
-  if (!refreshToken) throw new Error('No refresh token');
+  if (!hasRefreshToken) throw new Error('No refresh token');
 
-  const resp = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      refresh_token: refreshToken,
-      grant_type: 'refresh_token',
-    }),
-  });
-
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}));
-    // If refresh token is revoked, clear auth
-    if (resp.status === 400 || resp.status === 401) {
-      await signOut();
-    }
-    throw new Error(err.error_description || err.error || `Refresh failed: ${resp.status}`);
+  try {
+    const tokens = await invoke('google_refresh_access_token', { clientId: CLIENT_ID });
+    accessToken = tokens.access_token;
+    tokenExpiry = Date.now() + (tokens.expires_in - 60) * 1000;
+  } catch (error) {
+    await signOut();
+    throw error;
   }
-
-  const tokens = await resp.json();
-  accessToken = tokens.access_token;
-  tokenExpiry = Date.now() + (tokens.expires_in - 60) * 1000;
-
-  await store.set('gd_access_token', accessToken);
-  await store.set('gd_token_expiry', tokenExpiry);
 }
 
 // ── Google Drive Helpers ───────────────────────────────
@@ -318,7 +285,7 @@ async function syncDictionary() {
 
   if (file) {
     const remoteRaw = await readFile(file.id);
-    const remote = normalizeDictStore(remoteRaw);
+    const remote = normalizeDictionaryStore(remoteRaw);
 
     // Merge with tombstones
     const merged = mergeDictionaries(local, remote);
@@ -345,16 +312,6 @@ async function syncDictionary() {
  * Normalize remote data to { terms, deleted } format.
  * Handles both the old string[] format and the new tombstone format.
  */
-function normalizeDictStore(raw) {
-  if (Array.isArray(raw)) {
-    return { terms: raw, deleted: [] };
-  }
-  return {
-    terms: Array.isArray(raw?.terms) ? raw.terms : [],
-    deleted: Array.isArray(raw?.deleted) ? raw.deleted : [],
-  };
-}
-
 /**
  * Merge two dictionary stores with tombstone awareness.
  *
@@ -383,58 +340,6 @@ function normalizeDictStore(raw) {
  * Re-adding a term always lifts its local tombstone first (in addDictTerm),
  * so re-adds still work correctly.
  */
-function mergeDictionaries(local, remote) {
-  // Build lookup sets for each side
-  const localTermSet = new Set(local.terms.map(t => t.toLowerCase().trim()));
-  const localDeletedSet = new Set(local.deleted.map(t => t.toLowerCase().trim()));
-  const remoteTermSet = new Set(remote.terms.map(t => t.toLowerCase().trim()));
-  const remoteDeletedSet = new Set(remote.deleted.map(t => t.toLowerCase().trim()));
-
-  // A term is "alive" on a side if present in terms but NOT in its own deleted list
-  const isAliveLocal  = (key) => localTermSet.has(key)  && !localDeletedSet.has(key);
-  const isAliveRemote = (key) => remoteTermSet.has(key) && !remoteDeletedSet.has(key);
-
-  // Collect all unique terms and tombstones (preserving display casing)
-  const allTerms = new Map();
-  for (const t of [...local.terms, ...remote.terms]) {
-    const key = t.toLowerCase().trim();
-    if (!allTerms.has(key)) allTerms.set(key, t.trim());
-  }
-
-  const allDeleted = new Map();
-  for (const t of [...local.deleted, ...remote.deleted]) {
-    const key = t.toLowerCase().trim();
-    if (!allDeleted.has(key)) allDeleted.set(key, t.trim());
-  }
-
-  // Resolve survival:
-  // A term survives only if it is alive on a side AND the other side
-  // has NOT explicitly tombstoned it. An explicit tombstone always wins
-  // over a stale (not-yet-synced) presence on the other side.
-  const finalTerms = [];
-  for (const [key, display] of allTerms) {
-    const localAliveAndNotRemoteDeleted  = isAliveLocal(key)  && !remoteDeletedSet.has(key);
-    const remoteAliveAndNotLocalDeleted  = isAliveRemote(key) && !localDeletedSet.has(key);
-    if (localAliveAndNotRemoteDeleted || remoteAliveAndNotLocalDeleted) {
-      finalTerms.push(display);
-    }
-  }
-
-  // Keep a tombstone if the term did not survive (i.e. was not re-added on
-  // either side after the deletion).
-  const survivingSet = new Set(finalTerms.map(t => t.toLowerCase().trim()));
-  const finalDeleted = [];
-  for (const [key, display] of allDeleted) {
-    if (!survivingSet.has(key)) {
-      finalDeleted.push(display);
-    }
-  }
-
-  finalTerms.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-
-  return { terms: finalTerms, deleted: finalDeleted };
-}
-
 /**
  * History sync — TOMBSTONE MERGE strategy.
  *
@@ -481,16 +386,6 @@ async function syncHistory() {
  * Normalize remote data to { entries, deleted } format.
  * Handles both the old flat array format and the new tombstone format.
  */
-function normalizeHistoryStore(raw) {
-  if (Array.isArray(raw)) {
-    return { entries: raw, deleted: [] };
-  }
-  return {
-    entries: Array.isArray(raw?.entries) ? raw.entries : [],
-    deleted: Array.isArray(raw?.deleted) ? raw.deleted : [],
-  };
-}
-
 /**
  * Merge two history stores with tombstone awareness.
  *
@@ -503,89 +398,10 @@ function normalizeHistoryStore(raw) {
  *
  * Result is sorted newest-first and capped at 50.
  */
-function mergeHistories(local, remote) {
-  // Build lookup sets for each side
-  const localEntryMap = new Map();
-  for (const e of local.entries) {
-    if (!e || typeof e.text !== 'string') continue;
-    const key = e.text.trim().toLowerCase();
-    const existing = localEntryMap.get(key);
-    if (!existing || e.time > existing.time) localEntryMap.set(key, e);
-  }
-
-  const localDeletedSet = new Set();
-  for (const e of local.deleted) {
-    if (!e || typeof e.text !== 'string') continue;
-    localDeletedSet.add(e.text.trim().toLowerCase());
-  }
-
-  const remoteEntryMap = new Map();
-  for (const e of remote.entries) {
-    if (!e || typeof e.text !== 'string') continue;
-    const key = e.text.trim().toLowerCase();
-    const existing = remoteEntryMap.get(key);
-    if (!existing || e.time > existing.time) remoteEntryMap.set(key, e);
-  }
-
-  const remoteDeletedSet = new Set();
-  for (const e of remote.deleted) {
-    if (!e || typeof e.text !== 'string') continue;
-    remoteDeletedSet.add(e.text.trim().toLowerCase());
-  }
-
-  // A entry is "alive" on a side if present in entries but NOT in its own deleted list
-  const isAliveLocal  = (key) => localEntryMap.has(key)  && !localDeletedSet.has(key);
-  const isAliveRemote = (key) => remoteEntryMap.has(key) && !remoteDeletedSet.has(key);
-
-  // Collect all unique entries (preserving best timestamp)
-  const allEntries = new Map();
-  for (const [key, e] of localEntryMap) {
-    const existing = allEntries.get(key);
-    if (!existing || e.time > existing.time) allEntries.set(key, e);
-  }
-  for (const [key, e] of remoteEntryMap) {
-    const existing = allEntries.get(key);
-    if (!existing || e.time > existing.time) allEntries.set(key, e);
-  }
-
-  // Collect all tombstones
-  const allDeleted = new Map();
-  for (const e of [...local.deleted, ...remote.deleted]) {
-    if (!e || typeof e.text !== 'string') continue;
-    const key = e.text.trim().toLowerCase();
-    if (!allDeleted.has(key)) allDeleted.set(key, e);
-  }
-
-  // Resolve survival: either explicit delete wins
-  const finalEntries = [];
-  for (const [key, entry] of allEntries) {
-    const localAliveAndNotRemoteDeleted  = isAliveLocal(key)  && !remoteDeletedSet.has(key);
-    const remoteAliveAndNotLocalDeleted  = isAliveRemote(key) && !localDeletedSet.has(key);
-    if (localAliveAndNotRemoteDeleted || remoteAliveAndNotLocalDeleted) {
-      finalEntries.push(entry);
-    }
-  }
-
-  // Keep a tombstone if the entry did not survive
-  const survivingSet = new Set(finalEntries.map(e => e.text.trim().toLowerCase()));
-  const finalDeleted = [];
-  for (const [key, entry] of allDeleted) {
-    if (!survivingSet.has(key)) {
-      finalDeleted.push(entry);
-    }
-  }
-
-  // Sort newest-first, cap at 50
-  finalEntries.sort((a, b) => b.time - a.time);
-  if (finalEntries.length > 50) finalEntries.length = 50;
-
-  return { entries: finalEntries, deleted: finalDeleted };
-}
-
 // ── Public Sync API ────────────────────────────────────
 
 export async function syncNow() {
-  if (!refreshToken || syncInProgress) return;
+  if (!hasRefreshToken || syncInProgress) return;
   syncInProgress = true;
   emitStatus('syncing', 'Syncing\u2026');
 
@@ -623,7 +439,7 @@ export async function syncNow() {
  */
 let debouncedSyncTimeout = null;
 export function scheduleSyncAfterChange() {
-  if (!refreshToken) return;
+  if (!hasRefreshToken) return;
   if (debouncedSyncTimeout) clearTimeout(debouncedSyncTimeout);
   debouncedSyncTimeout = setTimeout(() => {
     syncNow().catch(err => console.warn('[Sync] Debounced sync failed:', err));
@@ -656,17 +472,11 @@ function stopAutoSync() {
 
 function getLocalDictionary() {
   try {
-    const raw = JSON.parse(localStorage.getItem('annotate_dictionary') || '{"terms":[],"deleted":[]}');
-    // Migrate from old string[] format
-    if (Array.isArray(raw)) {
-      return { terms: raw, deleted: [] };
-    }
-    return {
-      terms: Array.isArray(raw.terms) ? raw.terms : [],
-      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
-    };
+    return normalizeDictionaryStore(JSON.parse(
+      localStorage.getItem('annotate_dictionary') || '{"terms":[],"deleted":[]}',
+    ));
   } catch {
-    return { terms: [], deleted: [] };
+    return normalizeDictionaryStore(null);
   }
 }
 
@@ -679,17 +489,11 @@ function saveLocalDictionary(store) {
 
 function getLocalHistory() {
   try {
-    const raw = JSON.parse(localStorage.getItem('annotate_history') || '{"entries":[],"deleted":[]}');
-    // Migrate from old flat array format
-    if (Array.isArray(raw)) {
-      return { entries: raw, deleted: [] };
-    }
-    return {
-      entries: Array.isArray(raw.entries) ? raw.entries : [],
-      deleted: Array.isArray(raw.deleted) ? raw.deleted : [],
-    };
+    return normalizeHistoryStore(JSON.parse(
+      localStorage.getItem('annotate_history') || '{"entries":[],"deleted":[]}',
+    ));
   } catch {
-    return { entries: [], deleted: [] };
+    return normalizeHistoryStore(null);
   }
 }
 

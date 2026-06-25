@@ -15,7 +15,9 @@ use tokenizers::Tokenizer;
 
 /// Cloudflare R2 public URL for the pre-exported ONNX model bundle
 const MODEL_URL: &str = "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/gector/gector-bert-base-onnx.zip";
+const MODEL_SHA256: &str = "94b0f12e62f8ea19873fb5a957516518ddc597dbe461cd5a59976984294e9880";
 const MODEL_DIR_NAME: &str = "gector";
+const SOURCE_MARKER_FILENAME: &str = ".source-sha256";
 const MODEL_FILENAME: &str = "model.onnx";
 const TOKENIZER_FILENAME: &str = "tokenizer.json";
 const LABELS_FILENAME: &str = "labels.json";
@@ -50,6 +52,9 @@ pub fn is_model_downloaded(data_dir: &Path) -> bool {
         && dir.join(TOKENIZER_FILENAME).exists()
         && dir.join(LABELS_FILENAME).exists()
         && dir.join(VERB_VOCAB_FILENAME).exists()
+        && std::fs::read_to_string(dir.join(SOURCE_MARKER_FILENAME))
+            .map(|hash| hash.trim().eq_ignore_ascii_case(MODEL_SHA256))
+            .unwrap_or(false)
 }
 
 // ── Download ───────────────────────────────────────────
@@ -60,7 +65,9 @@ pub async fn download_model(
     progress_cb: impl Fn(u64, u64) + Send + 'static,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let dest_dir = model_dir(data_dir);
-    std::fs::create_dir_all(&dest_dir)?;
+    std::fs::create_dir_all(data_dir)?;
+    let archive_path = data_dir.join("_gector_model.zip");
+    let staging_dir = data_dir.join("gector.staging");
 
     log::info!("[GEC] Downloading model to {:?}", dest_dir);
 
@@ -68,51 +75,60 @@ pub async fn download_model(
         .timeout(std::time::Duration::from_secs(3600))
         .build()?;
 
-    let resp = client.get(MODEL_URL).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", resp.status()).into());
-    }
+    crate::download::download_verified(
+        &client,
+        MODEL_URL,
+        &archive_path,
+        MODEL_SHA256,
+        progress_cb,
+    )
+    .await?;
 
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut zip_bytes: Vec<u8> = Vec::with_capacity(total as usize);
+    let install_result = install_model_archive(&archive_path, &staging_dir, &dest_dir);
+    let _ = std::fs::remove_file(&archive_path);
+    install_result
+}
 
-    let mut stream = resp.bytes_stream();
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        zip_bytes.extend_from_slice(&chunk);
-        downloaded += chunk.len() as u64;
-        progress_cb(downloaded, total);
-    }
+fn install_model_archive(
+    archive_path: &Path,
+    staging_dir: &Path,
+    destination: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _ = std::fs::remove_dir_all(staging_dir);
+    std::fs::create_dir_all(staging_dir)?;
+    let required = [
+        MODEL_FILENAME,
+        TOKENIZER_FILENAME,
+        LABELS_FILENAME,
+        VERB_VOCAB_FILENAME,
+    ];
+    let archive_file = std::fs::File::open(archive_path)?;
+    let mut archive = zip::ZipArchive::new(archive_file)?;
 
-    // Extract zip
-    log::info!("[GEC] Extracting {} bytes ...", zip_bytes.len());
-    let cursor = std::io::Cursor::new(zip_bytes);
-    let mut archive = zip::ZipArchive::new(cursor)?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
-
-        // Skip directories and hidden files
-        if name.ends_with('/') || name.starts_with("__MACOSX") || name.starts_with('.') {
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let Some(filename) = Path::new(entry.name()).file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !required.contains(&filename) {
             continue;
         }
-
-        // Extract just the filename (strip any directory prefix in the zip)
-        let filename = Path::new(&name)
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string())
-            .unwrap_or(name.clone());
-
-        let out_path = dest_dir.join(&filename);
-        let mut out_file = std::fs::File::create(&out_path)?;
-        std::io::copy(&mut file, &mut out_file)?;
-        log::info!("[GEC] Extracted: {}", filename);
+        let output = staging_dir.join(filename);
+        let mut output_file = std::fs::File::create(&output)?;
+        std::io::copy(&mut entry, &mut output_file)?;
     }
 
-    log::info!("[GEC] Download and extraction complete");
+    if required.iter().any(|filename| !staging_dir.join(filename).exists()) {
+        let _ = std::fs::remove_dir_all(staging_dir);
+        return Err("Verified GEC archive is missing required files".into());
+    }
+    std::fs::write(staging_dir.join(SOURCE_MARKER_FILENAME), MODEL_SHA256)?;
+
+    if destination.exists() {
+        std::fs::remove_dir_all(destination)?;
+    }
+    std::fs::rename(staging_dir, destination)?;
+    log::info!("[GEC] Verified model installed at {:?}", destination);
     Ok(())
 }
 

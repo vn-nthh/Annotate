@@ -526,19 +526,27 @@ fn azure_transcribe_url(
         return Err("Azure Foundry endpoint is required".into());
     }
 
-    let base = match trimmed.split_once("/api/projects/") {
-        Some((resource_endpoint, _)) => resource_endpoint,
-        None => trimmed,
-    };
-
-    if !base.starts_with("https://") && !base.starts_with("http://") {
-        return Err("Azure Foundry endpoint must start with https://".into());
+    let mut url = reqwest::Url::parse(trimmed)
+        .map_err(|error| format!("Invalid Azure Foundry endpoint: {error}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("Azure Foundry endpoint must use HTTPS".into());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Azure Foundry endpoint must not include credentials".into());
     }
 
-    Ok(format!(
-        "{}/speechtotext/transcriptions:transcribe?api-version={}",
-        base, AZURE_SPEECH_API_VERSION
-    ))
+    let base_path = url
+        .path()
+        .split_once("/api/projects/")
+        .map_or(url.path(), |(resource_path, _)| resource_path)
+        .trim_end_matches('/');
+    let transcribe_path = format!("{base_path}/speechtotext/transcriptions:transcribe");
+    url.set_path(&transcribe_path);
+    url.set_query(None);
+    url.set_fragment(None);
+    url.query_pairs_mut()
+        .append_pair("api-version", AZURE_SPEECH_API_VERSION);
+    Ok(url.into())
 }
 
 fn azure_locales(language: Option<&str>) -> Option<Vec<String>> {
@@ -628,6 +636,13 @@ mod tests {
             url,
             "https://contoso.services.ai.azure.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
         );
+    }
+
+    #[test]
+    fn rejects_insecure_azure_endpoint() {
+        let error = azure_transcribe_url("http://contoso.services.ai.azure.com/api/projects/test")
+            .unwrap_err();
+        assert!(error.to_string().contains("HTTPS"));
     }
 
     #[test]

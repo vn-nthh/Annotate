@@ -31,6 +31,27 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Configure Google OAuth client
+        shell: pwsh
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
+        run: |
+          if (-not $env:GOOGLE_OAUTH_CLIENT_ID) {
+            throw 'Repository variable GOOGLE_OAUTH_CLIENT_ID is required for release builds.'
+          }
+          @{ client_id = $env:GOOGLE_OAUTH_CLIENT_ID } |
+            ConvertTo-Json |
+            Set-Content -Encoding utf8 src/oauth.config.json
+
+      - name: Build Whisper sidecar from source
+        shell: pwsh
+        run: ./scripts/build-whisper-worker.ps1
+
+      - name: Test
+        run: |
+          npm test
+          cargo test --workspace --locked --manifest-path src-tauri/Cargo.toml
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:

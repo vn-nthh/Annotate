@@ -231,20 +231,24 @@ fn voice_live_url(endpoint: &str) -> Result<String, String> {
         return Err("Azure Foundry endpoint is required".to_string());
     }
 
-    let base = trimmed
-        .split_once("/api/projects/")
-        .map_or(trimmed, |(resource_endpoint, _)| resource_endpoint);
-    let websocket_base = if let Some(host) = base.strip_prefix("https://") {
-        format!("wss://{host}")
-    } else if let Some(host) = base.strip_prefix("http://") {
-        format!("ws://{host}")
-    } else {
-        return Err("Azure Foundry endpoint must start with https://".to_string());
-    };
+    let mut url = reqwest::Url::parse(trimmed)
+        .map_err(|error| format!("Invalid Azure Foundry endpoint: {error}"))?;
+    if url.scheme() != "https" || url.host_str().is_none() {
+        return Err("Azure Foundry endpoint must use HTTPS".to_string());
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("Azure Foundry endpoint must not include credentials".to_string());
+    }
 
-    Ok(format!(
-        "{websocket_base}/voice-live/realtime?api-version={VOICE_LIVE_API_VERSION}&model={VOICE_LIVE_SESSION_MODEL}"
-    ))
+    url.set_scheme("wss")
+        .map_err(|_| "Failed to create secure Azure WebSocket URL".to_string())?;
+    url.set_path("/voice-live/realtime");
+    url.set_query(None);
+    url.set_fragment(None);
+    url.query_pairs_mut()
+        .append_pair("api-version", VOICE_LIVE_API_VERSION)
+        .append_pair("model", VOICE_LIVE_SESSION_MODEL);
+    Ok(url.into())
 }
 
 fn message_json(message: &Message) -> Result<Option<Value>, String> {
@@ -293,5 +297,12 @@ mod tests {
             url,
             "wss://contoso.services.ai.azure.com/voice-live/realtime?api-version=2026-04-10&model=gpt-4.1"
         );
+    }
+
+    #[test]
+    fn rejects_insecure_voice_live_endpoint() {
+        let error = voice_live_url("http://contoso.services.ai.azure.com/api/projects/test")
+            .unwrap_err();
+        assert!(error.contains("HTTPS"));
     }
 }

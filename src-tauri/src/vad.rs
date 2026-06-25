@@ -16,6 +16,7 @@ use ort::session::Session;
 /// Cloudflare R2 public URL for the Silero VAD v5 ONNX model
 const VAD_MODEL_URL: &str =
     "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/silero_vad_v6.onnx";
+const VAD_MODEL_SHA256: &str = "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3";
 const VAD_DIR_NAME: &str = "vad";
 const VAD_MODEL_FILENAME: &str = "silero_vad_v6.onnx";
 
@@ -56,8 +57,7 @@ pub fn model_path(data_dir: &Path) -> PathBuf {
 }
 
 pub fn is_model_downloaded(data_dir: &Path) -> bool {
-    let p = model_path(data_dir);
-    p.exists() && p.metadata().map(|m| m.len() > 100_000).unwrap_or(false)
+    crate::download::verify_file_sha256(&model_path(data_dir), VAD_MODEL_SHA256)
 }
 
 // ── Download ───────────────────────────────────────────
@@ -76,24 +76,14 @@ pub async fn download_model(
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    let resp = client.get(VAD_MODEL_URL).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("VAD download failed: HTTP {}", resp.status()).into());
-    }
-
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-    let mut file = std::fs::File::create(&dest)?;
-
-    let mut stream = resp.bytes_stream();
-    use futures_util::StreamExt;
-    use std::io::Write;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk)?;
-        downloaded += chunk.len() as u64;
-        progress_cb(downloaded, total);
-    }
+    let downloaded = crate::download::download_verified(
+        &client,
+        VAD_MODEL_URL,
+        &dest,
+        VAD_MODEL_SHA256,
+        progress_cb,
+    )
+    .await?;
 
     log::info!("[VAD] Download complete: {} bytes", downloaded);
     Ok(())

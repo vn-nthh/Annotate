@@ -3,6 +3,7 @@ node_modules/
 
 # Rust build artifacts
 src-tauri/target/
+src-tauri/binaries/*.exe
 
 # Large model files
 scripts/gector-onnx/

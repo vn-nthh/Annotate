@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 const MODEL_URL: &str =
     "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/ggml-large-v3-turbo-q5_0.bin";
 const MODEL_FILENAME: &str = "ggml-large-v3-turbo-q5_0.bin";
+const MODEL_SHA256: &str = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
 
 // ── Worker Process State ──────────────────────────────
 
@@ -38,8 +39,7 @@ pub fn model_path(data_dir: &std::path::Path) -> PathBuf {
 
 /// Check whether the model file already exists on disk.
 pub fn is_model_downloaded(data_dir: &std::path::Path) -> bool {
-    let p = model_path(data_dir);
-    p.exists() && p.metadata().map(|m| m.len() > 1_000_000).unwrap_or(false)
+    crate::download::verify_file_sha256(&model_path(data_dir), MODEL_SHA256)
 }
 
 /// Check if the worker is currently running and model loaded.
@@ -59,25 +59,14 @@ pub async fn download_model(
         .timeout(std::time::Duration::from_secs(3600))
         .build()?;
 
-    let resp = client.get(MODEL_URL).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("Download failed: HTTP {}", resp.status()).into());
-    }
-
-    let total = resp.content_length().unwrap_or(0);
-    let mut downloaded: u64 = 0;
-
-    let mut file = std::fs::File::create(&dest)?;
-    let mut stream = resp.bytes_stream();
-
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        use std::io::Write;
-        file.write_all(&chunk)?;
-        downloaded += chunk.len() as u64;
-        progress_cb(downloaded, total);
-    }
+    let downloaded = crate::download::download_verified(
+        &client,
+        MODEL_URL,
+        &dest,
+        MODEL_SHA256,
+        progress_cb,
+    )
+    .await?;
 
     log::info!("[WhisperLocal] Download complete: {} bytes", downloaded);
     Ok(dest)
@@ -333,8 +322,12 @@ const CUDA_DLL_TEMPLATES: &[&str] = &["cublas64_{VER}.dll", "cublasLt64_{VER}.dl
 /// NVIDIA redistribution package URLs (CUDA 12.6 — used as fallback download)
 const CUDART_REDIST_URL: &str =
     "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.6.77-archive.zip";
+const CUDART_REDIST_SHA256: &str =
+    "7a313bc0c93b1a50bb03aa9783a199ae70c3b66e2d8084da65e8254a8577b925";
 const CUBLAS_REDIST_URL: &str =
     "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.6.4.1-archive.zip";
+const CUBLAS_REDIST_SHA256: &str =
+    "1a87ec80f8c0e5a39badc87010d479930c5b63abd788b3a05bd688a5980a3d07";
 
 /// Return the directory where the executable lives.
 fn exe_dir() -> PathBuf {
@@ -488,6 +481,8 @@ pub async fn download_cuda_runtime(
         total_downloaded = download_and_extract_dll_package(
             &client,
             CUDART_REDIST_URL,
+            CUDART_REDIST_SHA256,
+            "_cuda_cudart.zip",
             &dest_dir,
             &missing,
             &progress_cb,
@@ -502,6 +497,8 @@ pub async fn download_cuda_runtime(
         total_downloaded = download_and_extract_dll_package(
             &client,
             CUBLAS_REDIST_URL,
+            CUBLAS_REDIST_SHA256,
+            "_cuda_cublas.zip",
             &dest_dir,
             &missing,
             &progress_cb,
@@ -530,49 +527,54 @@ pub async fn download_cuda_runtime(
 async fn download_and_extract_dll_package(
     client: &reqwest::Client,
     url: &str,
+    expected_sha256: &str,
+    archive_name: &str,
     dest_dir: &std::path::Path,
     needed_dlls: &[String],
     progress_cb: &(impl Fn(u64, u64) + Send),
     mut downloaded_so_far: u64,
     total_estimate: u64,
 ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-    let resp = client.get(url).send().await?;
-    if !resp.status().is_success() {
-        return Err(format!("NVIDIA download failed: HTTP {} for {}", resp.status(), url).into());
-    }
+    let archive_path = dest_dir.join(archive_name);
+    let previous_downloaded = downloaded_so_far;
+    let archive_bytes = crate::download::download_verified(
+        client,
+        url,
+        &archive_path,
+        expected_sha256,
+        |current, _| progress_cb(previous_downloaded + current, total_estimate),
+    )
+    .await?;
+    downloaded_so_far += archive_bytes;
 
-    let temp_path = dest_dir.join("_cuda_redist_temp.zip");
-    let mut file = std::fs::File::create(&temp_path)?;
-    let mut stream = resp.bytes_stream();
-
-    use futures_util::StreamExt;
-    use std::io::Write;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        file.write_all(&chunk)?;
-        downloaded_so_far += chunk.len() as u64;
-        progress_cb(downloaded_so_far, total_estimate);
-    }
-    drop(file);
-
-    let zip_file = std::fs::File::open(&temp_path)?;
-    let mut archive = zip::ZipArchive::new(zip_file)?;
-
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i)?;
-        let entry_name = entry.name().to_string();
-
-        if let Some(filename) = entry_name.rsplit('/').next() {
-            if needed_dlls.iter().any(|dll| dll == filename) {
-                let out_path = dest_dir.join(filename);
-                let mut out_file = std::fs::File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut out_file)?;
-                log::info!("[CUDA] Extracted {} ({} bytes)", filename, out_path.metadata().map(|m| m.len()).unwrap_or(0));
+    let extract_result = (|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let zip_file = std::fs::File::open(&archive_path)?;
+        let mut archive = zip::ZipArchive::new(zip_file)?;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index)?;
+            let Some(filename) = entry.name().rsplit('/').next() else {
+                continue;
+            };
+            if !needed_dlls.iter().any(|dll| dll == filename) {
+                continue;
             }
+
+            let output = dest_dir.join(filename);
+            let partial = dest_dir.join(format!("{filename}.part"));
+            let _ = std::fs::remove_file(&partial);
+            let mut output_file = std::fs::File::create(&partial)?;
+            std::io::copy(&mut entry, &mut output_file)?;
+            output_file.sync_all()?;
+            drop(output_file);
+            if output.exists() {
+                std::fs::remove_file(&output)?;
+            }
+            std::fs::rename(&partial, &output)?;
+            log::info!("[CUDA] Extracted verified {filename}");
         }
-    }
-
-    let _ = std::fs::remove_file(&temp_path);
-
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&archive_path);
+    extract_result?;
     Ok(downloaded_so_far)
 }

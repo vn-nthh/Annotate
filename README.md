@@ -73,16 +73,18 @@ npm run build
 
 ### Google Drive Sync (Optional)
 
-To enable cloud sync, create a `src/oauth.config.json` file with your Google OAuth credentials:
+To enable cloud sync for a local build, create a Google OAuth client with the
+**Desktop app** application type, then create `src/oauth.config.json`:
 
 ```json
 {
-  "client_id": "YOUR_CLIENT_ID.apps.googleusercontent.com",
-  "client_secret": "YOUR_CLIENT_SECRET"
+  "client_id": "YOUR_GOOGLE_DESKTOP_CLIENT_ID.apps.googleusercontent.com"
 }
 ```
 
-See `src/oauth.config.json.example` for reference.
+Desktop client IDs are public configuration. Annotate uses PKCE and stores the
+Google refresh token in the operating system credential manager; no client secret
+is bundled or required. See `src/oauth.config.json.example` for reference.
 
 ## License
 

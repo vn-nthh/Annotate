@@ -1,5 +1,6 @@
 mod audio;
 mod azure_stream;
+mod download;
 mod transcribe;
 mod whisper_local;
 mod google_auth;
@@ -910,6 +911,10 @@ pub fn run() {
             check_cuda_runtime,
             download_cuda_runtime,
             google_auth::google_oauth,
+            google_auth::google_refresh_access_token,
+            google_auth::has_google_refresh_token,
+            google_auth::migrate_google_refresh_token,
+            google_auth::clear_google_refresh_token,
             google_auth::cancel_google_oauth,
             check_gec_model,
             download_gec_model,
