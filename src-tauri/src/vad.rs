@@ -29,9 +29,14 @@ const STATE_DIM: usize = 128; // LSTM hidden size
 /// Default VAD thresholds
 const SPEECH_THRESHOLD: f32 = 0.5;
 const MIN_SPEECH_DURATION_MS: f32 = 250.0;
-const MIN_SILENCE_DURATION_MS: f32 = 300.0;
-/// Padding added before and after each detected speech segment
-const SPEECH_PAD_MS: f32 = 400.0;
+const MIN_SILENCE_DURATION_MS: f32 = 250.0;
+/// Padding added around each detected speech segment.
+///
+/// Keep this below common sentence-pause length. MAI-Transcribe exposes
+/// phrase-level timestamps but not word-level timestamps, so merged VAD
+/// regions force later subtitle splits to approximate timing from text.
+const SPEECH_PAD_START_MS: f32 = 250.0;
+const SPEECH_PAD_END_MS: f32 = 150.0;
 
 // ── Types ──────────────────────────────────────────────
 
@@ -141,7 +146,7 @@ pub fn unload() {
 /// Detect speech segments in 16kHz mono PCM audio.
 ///
 /// Returns a list of speech segments with start/end times in seconds.
-/// Each segment has `SPEECH_PAD_MS` padding on both sides.
+/// Each segment has a small amount of padding around it.
 pub fn detect_speech(pcm: &[f32]) -> Result<Vec<SpeechSegment>, String> {
     let mut guard = VAD_SESSION
         .lock()
@@ -232,7 +237,8 @@ pub fn detect_speech(pcm: &[f32]) -> Result<Vec<SpeechSegment>, String> {
         SPEECH_THRESHOLD,
         MIN_SPEECH_DURATION_MS,
         MIN_SILENCE_DURATION_MS,
-        SPEECH_PAD_MS,
+        SPEECH_PAD_START_MS,
+        SPEECH_PAD_END_MS,
     );
 
     log::info!(
@@ -253,7 +259,8 @@ fn probs_to_segments(
     threshold: f32,
     min_speech_ms: f32,
     min_silence_ms: f32,
-    pad_ms: f32,
+    pad_start_ms: f32,
+    pad_end_ms: f32,
 ) -> Vec<SpeechSegment> {
     let total_duration_s = total_samples as f64 / SAMPLE_RATE as f64;
 
@@ -298,12 +305,13 @@ fn probs_to_segments(
         .collect();
 
     // Apply padding and convert to seconds
-    let pad_samples = (pad_ms * samples_per_ms) as usize;
+    let pad_start_samples = (pad_start_ms * samples_per_ms) as usize;
+    let pad_end_samples = (pad_end_ms * samples_per_ms) as usize;
     let mut segments: Vec<SpeechSegment> = Vec::new();
 
     for (start, end) in raw_segments {
-        let padded_start = start.saturating_sub(pad_samples);
-        let padded_end = (end + pad_samples).min(total_samples);
+        let padded_start = start.saturating_sub(pad_start_samples);
+        let padded_end = (end + pad_end_samples).min(total_samples);
 
         let start_s = padded_start as f64 / SAMPLE_RATE as f64;
         let end_s = padded_end as f64 / SAMPLE_RATE as f64;
@@ -323,4 +331,57 @@ fn probs_to_segments(
     }
 
     segments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_sentence_pause_as_separate_segments_after_padding() {
+        let probs = vad_probs(&[(20, true), (16, false), (20, true)]);
+        let segments = probs_to_segments(
+            &probs,
+            probs.len() * WINDOW_SIZE,
+            WINDOW_SIZE,
+            SAMPLE_RATE as f32 / 1000.0,
+            SPEECH_THRESHOLD,
+            MIN_SPEECH_DURATION_MS,
+            MIN_SILENCE_DURATION_MS,
+            SPEECH_PAD_START_MS,
+            SPEECH_PAD_END_MS,
+        );
+
+        assert_eq!(segments.len(), 2);
+        assert!(
+            segments[1].start > segments[0].end,
+            "expected a retained pause between sentence-like VAD segments"
+        );
+    }
+
+    #[test]
+    fn merges_short_hesitation_after_padding() {
+        let probs = vad_probs(&[(20, true), (8, false), (20, true)]);
+        let segments = probs_to_segments(
+            &probs,
+            probs.len() * WINDOW_SIZE,
+            WINDOW_SIZE,
+            SAMPLE_RATE as f32 / 1000.0,
+            SPEECH_THRESHOLD,
+            MIN_SPEECH_DURATION_MS,
+            MIN_SILENCE_DURATION_MS,
+            SPEECH_PAD_START_MS,
+            SPEECH_PAD_END_MS,
+        );
+
+        assert_eq!(segments.len(), 1);
+    }
+
+    fn vad_probs(runs: &[(usize, bool)]) -> Vec<f32> {
+        let mut probs = Vec::new();
+        for &(count, speech) in runs {
+            probs.extend(std::iter::repeat(if speech { 0.8 } else { 0.1 }).take(count));
+        }
+        probs
+    }
 }

@@ -13,10 +13,12 @@ use audio::{enumerate_capture_devices, apply_device_override};
 #[cfg(not(target_os = "windows"))]
 use enigo::{Enigo, Keyboard, Settings};
 use serde::Serialize;
+use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::ptr::null_mut;
 #[cfg(not(target_os = "windows"))]
-use std::sync::{LazyLock, Mutex};
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
@@ -30,7 +32,8 @@ use windows_sys::Win32::{
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
     },
     UI::Input::KeyboardAndMouse::{
-        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_CONTROL, VK_V,
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VK_C, VK_CONTROL,
+        VK_LWIN, VK_MENU, VK_RWIN, VK_SHIFT, VK_V,
     },
 };
 
@@ -707,10 +710,23 @@ fn clear_injected_clipboard_if_unchanged(injected_text: &str) -> Result<(), Stri
 
 #[cfg(target_os = "windows")]
 fn send_ctrl_v() -> Result<(), String> {
+    send_ctrl_combo(VK_V, "Ctrl+V")
+}
+
+#[cfg(target_os = "windows")]
+fn send_ctrl_c() -> Result<(), String> {
+    send_ctrl_combo(VK_C, "Ctrl+C")
+}
+
+/// Force-release modifier keys the user may still be holding from their hotkey,
+/// so a following synthetic Ctrl+C isn't polluted (e.g. into Ctrl+Alt+C).
+#[cfg(target_os = "windows")]
+fn release_modifiers() -> Result<(), String> {
     let mut inputs = [
-        keyboard_input(VK_CONTROL, 0),
-        keyboard_input(VK_V, 0),
-        keyboard_input(VK_V, KEYEVENTF_KEYUP),
+        keyboard_input(VK_MENU, KEYEVENTF_KEYUP),
+        keyboard_input(VK_SHIFT, KEYEVENTF_KEYUP),
+        keyboard_input(VK_LWIN, KEYEVENTF_KEYUP),
+        keyboard_input(VK_RWIN, KEYEVENTF_KEYUP),
         keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
     ];
     let sent = unsafe {
@@ -721,9 +737,91 @@ fn send_ctrl_v() -> Result<(), String> {
         )
     };
     if sent != inputs.len() as u32 {
-        return Err(format!("Failed to send Ctrl+V: sent {} of {}", sent, inputs.len()));
+        return Err(format!(
+            "Failed to release modifiers: sent {} of {}",
+            sent,
+            inputs.len()
+        ));
     }
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn send_ctrl_combo(vk: u16, label: &str) -> Result<(), String> {
+    let mut inputs = [
+        keyboard_input(VK_CONTROL, 0),
+        keyboard_input(vk, 0),
+        keyboard_input(vk, KEYEVENTF_KEYUP),
+        keyboard_input(VK_CONTROL, KEYEVENTF_KEYUP),
+    ];
+    let sent = unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_mut_ptr(),
+            std::mem::size_of::<INPUT>() as i32,
+        )
+    };
+    if sent != inputs.len() as u32 {
+        return Err(format!("Failed to send {}: sent {} of {}", label, sent, inputs.len()));
+    }
+    Ok(())
+}
+
+/// Capture the currently selected text in the foreground app by simulating
+/// Ctrl+C and reading the clipboard. Restores the prior clipboard text afterwards.
+/// Returns an empty string when nothing was copied (no selection).
+#[cfg(target_os = "windows")]
+#[tauri::command]
+fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String> {
+    // Let the user's hotkey modifiers release so they don't mix into our Ctrl+C
+    std::thread::sleep(std::time::Duration::from_millis(
+        release_delay_ms.unwrap_or(120).min(500),
+    ));
+    // Belt-and-suspenders: force-release any modifiers still held from the hotkey
+    if let Err(err) = release_modifiers() {
+        log::warn!("[Capture] modifier release failed: {}", err);
+    }
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    // Preserve whatever text the user had on the clipboard
+    let previous = read_clipboard_unicode_text().unwrap_or(None);
+
+    // Use a sentinel so we can tell "copy did nothing" apart from "copied same text"
+    let sentinel = format!("__annotate_capture_{}__", std::process::id());
+    set_clipboard_unicode_text(&sentinel)?;
+
+    send_ctrl_c()?;
+
+    // Poll for the clipboard to change (apps copy asynchronously)
+    let mut captured: Option<String> = None;
+    for _ in 0..20 {
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        match read_clipboard_unicode_text() {
+            Ok(Some(text)) if text != sentinel => {
+                captured = Some(text);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    // Restore the user's original clipboard (or clear our sentinel)
+    let restore_result = match &previous {
+        Some(text) => set_clipboard_unicode_text(text),
+        None => clear_injected_clipboard_if_unchanged(&sentinel),
+    };
+    if let Err(err) = restore_result {
+        log::warn!("[Clipboard] restore after capture failed: {}", err);
+    }
+
+    Ok(captured.unwrap_or_default())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String> {
+    let _ = release_delay_ms;
+    Err("Capturing selected text is only supported on Windows".to_string())
 }
 
 #[cfg(target_os = "windows")]
@@ -776,32 +874,95 @@ mod tests {
     }
 }
 
-/// Register a global hotkey that emits press/release events
-#[tauri::command]
-fn register_hotkey(app: AppHandle, shortcut_str: String) -> Result<(), String> {
-    let manager = app.global_shortcut();
+/// Registered global hotkeys by slot name ("main", "dictionary", ...).
+/// Lets multiple features own independent shortcuts without clobbering each other.
+static HOTKEY_SLOTS: Mutex<Option<HashMap<String, Shortcut>>> = Mutex::new(None);
 
-    // Unregister all existing shortcuts first
-    manager.unregister_all().map_err(|e| format!("Failed to unregister: {}", e))?;
+/// Register a global hotkey for a named slot, emitting `{event_prefix}-down`/`-up` events.
+/// Re-registering a slot replaces only that slot's previous shortcut.
+fn register_hotkey_slot(
+    app: &AppHandle,
+    slot: &str,
+    shortcut_str: &str,
+    event_prefix: &'static str,
+) -> Result<(), String> {
+    let manager = app.global_shortcut();
 
     let shortcut: Shortcut = shortcut_str
         .parse()
         .map_err(|e| format!("Invalid shortcut '{}': {}", shortcut_str, e))?;
+
+    let mut slots_guard = HOTKEY_SLOTS
+        .lock()
+        .map_err(|e| format!("Hotkey registry poisoned: {}", e))?;
+    let slots = slots_guard.get_or_insert_with(HashMap::new);
+
+    // Reject if another slot already uses this shortcut
+    if slots
+        .iter()
+        .any(|(name, existing)| name != slot && *existing == shortcut)
+    {
+        return Err(format!(
+            "Shortcut '{}' is already in use by another hotkey",
+            shortcut_str
+        ));
+    }
+
+    // Unregister this slot's previous shortcut, if any
+    if let Some(previous) = slots.remove(slot) {
+        if previous == shortcut {
+            // Same shortcut already bound to this slot — keep it as-is
+            slots.insert(slot.to_string(), shortcut);
+            return Ok(());
+        }
+        if let Err(e) = manager.unregister(previous) {
+            log::warn!("Failed to unregister previous '{}' hotkey: {}", slot, e);
+        }
+    }
 
     let app_handle = app.clone();
     manager
         .on_shortcut(shortcut, move |_app, _shortcut, event| {
             match event.state() {
                 ShortcutState::Pressed => {
-                    let _ = app_handle.emit("hotkey-down", ());
+                    let _ = app_handle.emit(&format!("{}-down", event_prefix), ());
                 }
                 ShortcutState::Released => {
-                    let _ = app_handle.emit("hotkey-up", ());
+                    let _ = app_handle.emit(&format!("{}-up", event_prefix), ());
                 }
             }
         })
         .map_err(|e| format!("Failed to register shortcut: {}", e))?;
 
+    slots.insert(slot.to_string(), shortcut);
+    Ok(())
+}
+
+/// Register the main push-to-talk hotkey (emits `hotkey-down`/`hotkey-up`)
+#[tauri::command]
+fn register_hotkey(app: AppHandle, shortcut_str: String) -> Result<(), String> {
+    register_hotkey_slot(&app, "main", &shortcut_str, "hotkey")
+}
+
+/// Register the "add selection to dictionary" hotkey (emits `dict-hotkey-down`/`dict-hotkey-up`)
+#[tauri::command]
+fn register_dict_hotkey(app: AppHandle, shortcut_str: String) -> Result<(), String> {
+    register_hotkey_slot(&app, "dictionary", &shortcut_str, "dict-hotkey")
+}
+
+/// Unregister the dictionary hotkey, if one is bound
+#[tauri::command]
+fn unregister_dict_hotkey(app: AppHandle) -> Result<(), String> {
+    let mut slots_guard = HOTKEY_SLOTS
+        .lock()
+        .map_err(|e| format!("Hotkey registry poisoned: {}", e))?;
+    if let Some(slots) = slots_guard.as_mut() {
+        if let Some(previous) = slots.remove("dictionary") {
+            app.global_shortcut()
+                .unregister(previous)
+                .map_err(|e| format!("Failed to unregister: {}", e))?;
+        }
+    }
     Ok(())
 }
 
@@ -817,7 +978,7 @@ fn show_throbber(app: AppHandle) -> Result<(), String> {
 
             // Get the window's actual physical size (may differ from config due to OS minimums)
             let win_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
-                (72.0 * scale) as u32,
+                (260.0 * scale) as u32,
                 (32.0 * scale) as u32,
             ));
             let margin_bottom = (60.0 * scale) as i32;
@@ -939,6 +1100,9 @@ pub fn run() {
             azure_stream_cancel,
             paste_text,
             register_hotkey,
+            register_dict_hotkey,
+            unregister_dict_hotkey,
+            capture_selected_text,
             show_throbber,
             hide_throbber,
             hide_to_tray,

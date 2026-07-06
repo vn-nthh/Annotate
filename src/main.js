@@ -1,5 +1,5 @@
 const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
+const { listen, emit } = window.__TAURI__.event;
 const { load } = window.__TAURI__.store;
 const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -31,6 +31,9 @@ const openrouterKeyInput = document.getElementById('openrouter-key-input');
 const openrouterKeyToggle = document.getElementById('openrouter-key-toggle');
 const hotkeyBtn = document.getElementById('hotkey-btn');
 const hotkeyDisplay = document.getElementById('hotkey-display');
+const dictHotkeyBtn = document.getElementById('dict-hotkey-btn');
+const dictHotkeyDisplay = document.getElementById('dict-hotkey-display');
+const dictHotkeyClear = document.getElementById('dict-hotkey-clear');
 const statusText = document.getElementById('status-text');
 const statusDot = document.getElementById('status-dot');
 const historyList = document.getElementById('history-list');
@@ -193,6 +196,19 @@ async function loadSavedSettings() {
       setStatus('Hotkey failed', true);
     }
   }
+
+  const savedDictHotkey = await store.get('dictHotkey');
+  if (savedDictHotkey) {
+    dictHotkeyDisplay.textContent = savedDictHotkey;
+    dictHotkeyDisplay.classList.add('hotkey-combo');
+    dictHotkeyClear.style.display = '';
+
+    try {
+      await invoke('register_dict_hotkey', { shortcutStr: savedDictHotkey });
+    } catch (err) {
+      console.error('Dictionary hotkey registration failed:', err);
+    }
+  }
 }
 
 function setupEventListeners() {
@@ -285,6 +301,10 @@ function setupEventListeners() {
 
   // Hotkey recorder
   hotkeyBtn.addEventListener('click', startHotkeyRecording);
+
+  // Dictionary hotkey recorder
+  dictHotkeyBtn.addEventListener('click', startDictHotkeyRecording);
+  dictHotkeyClear.addEventListener('click', clearDictHotkey);
 
   // History clear
   historyClear.addEventListener('click', () => {
@@ -385,11 +405,34 @@ async function autoLoadWhisperIfReady() {
 let recordingHotkey = false;
 
 function startHotkeyRecording() {
+  recordHotkeyCombo({
+    btn: hotkeyBtn,
+    display: hotkeyDisplay,
+    command: 'register_hotkey',
+    storeKey: 'hotkey',
+    onSaved: () => setStatus('Hotkey set', false),
+  });
+}
+
+function startDictHotkeyRecording() {
+  recordHotkeyCombo({
+    btn: dictHotkeyBtn,
+    display: dictHotkeyDisplay,
+    command: 'register_dict_hotkey',
+    storeKey: 'dictHotkey',
+    onSaved: () => {
+      dictHotkeyClear.style.display = '';
+      setStatus('Dictionary hotkey set', false);
+    },
+  });
+}
+
+function recordHotkeyCombo({ btn, display, command, storeKey, onSaved }) {
   if (recordingHotkey) return;
   recordingHotkey = true;
 
-  hotkeyBtn.classList.add('recording');
-  hotkeyDisplay.textContent = 'Press a key combo…';
+  btn.classList.add('recording');
+  display.textContent = 'Press a key combo…';
 
   const handler = async (e) => {
     e.preventDefault();
@@ -411,40 +454,53 @@ function startHotkeyRecording() {
     parts.push(key);
 
     const shortcut = parts.join('+');
-    const previousHotkey = await store.get('hotkey');
+    const previousHotkey = await store.get(storeKey);
 
     document.removeEventListener('keydown', handler, true);
     recordingHotkey = false;
-    hotkeyBtn.classList.remove('recording');
+    btn.classList.remove('recording');
 
-    hotkeyDisplay.textContent = shortcut;
-    hotkeyDisplay.classList.add('hotkey-combo');
+    display.textContent = shortcut;
+    display.classList.add('hotkey-combo');
 
     try {
-      await invoke('register_hotkey', { shortcutStr: shortcut });
-      await store.set('hotkey', shortcut);
-      setStatus('Hotkey set', false);
+      await invoke(command, { shortcutStr: shortcut });
+      await store.set(storeKey, shortcut);
+      onSaved?.();
     } catch (err) {
-      console.error('Failed to register hotkey:', err);
+      console.error(`Failed to register hotkey (${command}):`, err);
       setStatus('Invalid hotkey', true);
 
-      // `register_hotkey` clears existing bindings first, so restore the prior one on failure.
+      // Restore the prior binding on failure.
       if (previousHotkey) {
-        hotkeyDisplay.textContent = previousHotkey;
-        hotkeyDisplay.classList.add('hotkey-combo');
+        display.textContent = previousHotkey;
+        display.classList.add('hotkey-combo');
         try {
-          await invoke('register_hotkey', { shortcutStr: previousHotkey });
+          await invoke(command, { shortcutStr: previousHotkey });
         } catch (restoreErr) {
           console.error('Failed to restore previous hotkey:', restoreErr);
         }
       } else {
-        hotkeyDisplay.textContent = 'Not set';
-        hotkeyDisplay.classList.remove('hotkey-combo');
+        display.textContent = 'Not set';
+        display.classList.remove('hotkey-combo');
       }
     }
   };
 
   document.addEventListener('keydown', handler, true);
+}
+
+async function clearDictHotkey() {
+  try {
+    await invoke('unregister_dict_hotkey');
+  } catch (err) {
+    console.error('Failed to unregister dictionary hotkey:', err);
+  }
+  await store.delete('dictHotkey');
+  dictHotkeyDisplay.textContent = 'Click to record';
+  dictHotkeyDisplay.classList.remove('hotkey-combo');
+  dictHotkeyClear.style.display = 'none';
+  setStatus('Dictionary hotkey cleared', false);
 }
 
 function mapKeyToTauri(code) {
@@ -545,6 +601,71 @@ async function setupHotkeyListener() {
       isProcessing = false;
     }
   });
+
+  await listen('dict-hotkey-down', () => {
+    void captureSelectionToDictionary();
+  });
+}
+
+// ── Add Selection to Dictionary ────────────────────────
+let capturingSelection = false;
+
+// How long the throbber stays up while confirming a dictionary change.
+const DICT_CONFIRM_MS = 1600;
+
+// Reuse the throbber overlay to confirm a dictionary change near the cursor,
+// so the user gets feedback even when the main window isn't focused.
+async function showDictThrobberConfirm(kind, text) {
+  try {
+    // Send the confirmation content first; the throbber window is persistent
+    // (created hidden at startup) so its listener is already active.
+    await emit('throbber-confirm', { kind, text });
+    await invoke('show_throbber');
+    setTimeout(() => {
+      invoke('hide_throbber').catch((err) =>
+        console.error('Throbber hide failed:', err)
+      );
+    }, DICT_CONFIRM_MS);
+  } catch (err) {
+    console.error('Throbber confirm failed:', err);
+  }
+}
+
+async function captureSelectionToDictionary() {
+  if (capturingSelection) return;
+  capturingSelection = true;
+
+  try {
+    const captured = await invoke('capture_selected_text', {});
+    const term = String(captured || '').replace(/\s+/g, ' ').trim();
+
+    if (!term) {
+      setStatus('No text selected', true);
+      return;
+    }
+
+    // Guard against accidental large selections — dictionary terms are words/phrases
+    if (term.length > 100) {
+      setStatus('Selection too long', true);
+      return;
+    }
+
+    const result = addTermToDictionary(term);
+    const shortTerm = term.length > 24 ? term.slice(0, 24) + '…' : term;
+
+    if (result === 'added') {
+      setStatus(`Added "${shortTerm}"`, false);
+      void showDictThrobberConfirm('added', shortTerm);
+    } else if (result === 'duplicate') {
+      setStatus(`"${shortTerm}" already in dictionary`, false);
+      void showDictThrobberConfirm('duplicate', shortTerm);
+    }
+  } catch (err) {
+    console.error('Capture selection failed:', err);
+    setStatus('Capture failed', true);
+  } finally {
+    capturingSelection = false;
+  }
 }
 
 // ── Web Speech API Mode ────────────────────────────────
@@ -845,13 +966,26 @@ function addDictTerm() {
   const term = dictInput.value.trim();
   if (!term) return;
 
+  addTermToDictionary(term);
+  dictInput.value = '';
+}
+
+/**
+ * Add a term to the dictionary store. Returns:
+ *  'added'     — term was added
+ *  'duplicate' — term already exists
+ *  'invalid'   — empty/blank term
+ */
+function addTermToDictionary(rawTerm) {
+  const term = String(rawTerm || '').trim();
+  if (!term) return 'invalid';
+
   const store = getDictStore();
   const key = normalizeKey(term);
 
   // Avoid duplicates
   if (store.terms.some(item => normalizeKey(item.value) === key)) {
-    dictInput.value = '';
-    return;
+    return 'duplicate';
   }
 
   store.terms.push({ value: term, updatedAt: Date.now() });
@@ -861,9 +995,9 @@ function addDictTerm() {
   store.deleted = store.deleted.filter(item => normalizeKey(item.value) !== key);
 
   saveDictStore(store);
-  dictInput.value = '';
   renderDictionary();
   sync.scheduleSyncAfterChange();
+  return 'added';
 }
 
 function removeDictTerm(index) {
@@ -1979,8 +2113,7 @@ async function checkSubDeps() {
 function maybeHideSubDeps() {
   const ffmpegOk = subFfmpegStatus.classList.contains('ready');
   const vadOk = subVadStatus.classList.contains('ready');
-  const needsVad = modeSelect.value !== 'azure-mai';
-  if (ffmpegOk && (!needsVad || vadOk)) {
+  if (ffmpegOk && vadOk) {
     subDeps.style.display = 'none';
   } else {
     subDeps.style.display = '';
@@ -2023,7 +2156,6 @@ async function pickSubFile() {
 function updateSubGenerateBtn() {
   const ffmpegOk = subFfmpegStatus.classList.contains('ready');
   const vadOk = subVadStatus.classList.contains('ready');
-  const needsVad = modeSelect.value !== 'azure-mai';
   const hasFile = !!subSelectedFile;
   const notGenerating = !subGenerating;
 
@@ -2035,9 +2167,7 @@ function updateSubGenerateBtn() {
     engineOk = true; // API key is fetched during generate
   }
 
-  subGenerateBtn.disabled = !(
-    ffmpegOk && (!needsVad || vadOk) && hasFile && notGenerating && engineOk
-  );
+  subGenerateBtn.disabled = !(ffmpegOk && vadOk && hasFile && notGenerating && engineOk);
 }
 
 function updateSubSummarizeBtn() {

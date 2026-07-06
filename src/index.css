@@ -977,6 +977,26 @@ body::before {
   letter-spacing: 0.05em;
 }
 
+.dict-hotkey-clear {
+  margin-top: 8px;
+  padding: 6px 12px;
+  font-family: var(--font-main);
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--ink-light);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.2s, color 0.2s, background 0.2s;
+}
+
+.dict-hotkey-clear:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+  background: var(--paper-hover);
+}
+
 /* ============================================
    Animations
    ============================================ */

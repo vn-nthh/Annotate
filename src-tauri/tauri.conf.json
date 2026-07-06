@@ -22,7 +22,7 @@
       {
         "label": "throbber",
         "url": "throbber.html",
-        "width": 72,
+        "width": 260,
         "height": 32,
         "resizable": false,
         "fullscreen": false,
