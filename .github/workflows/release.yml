@@ -43,9 +43,15 @@ jobs:
             ConvertTo-Json |
             Set-Content -Encoding utf8 src/oauth.config.json
 
-      - name: Build Whisper sidecar from source
+      - name: Ensure Whisper sidecar
         shell: pwsh
-        run: ./scripts/build-whisper-worker.ps1
+        run: |
+          $sidecar = 'src-tauri\binaries\whisper-worker-x86_64-pc-windows-msvc.exe'
+          if (Test-Path $sidecar) {
+            Write-Host "Using checked-in Whisper sidecar: $sidecar"
+          } else {
+            ./scripts/build-whisper-worker.ps1
+          }
 
       - name: Test
         run: |
