@@ -552,14 +552,14 @@ async fn download_and_extract_dll_package(
         let mut archive = zip::ZipArchive::new(zip_file)?;
         for index in 0..archive.len() {
             let mut entry = archive.by_index(index)?;
-            let Some(filename) = entry.name().rsplit('/').next() else {
+            let Some(filename) = entry.name().rsplit('/').next().map(str::to_owned) else {
                 continue;
             };
-            if !needed_dlls.iter().any(|dll| dll == filename) {
+            if !needed_dlls.iter().any(|dll| dll == &filename) {
                 continue;
             }
 
-            let output = dest_dir.join(filename);
+            let output = dest_dir.join(&filename);
             let partial = dest_dir.join(format!("{filename}.part"));
             let _ = std::fs::remove_file(&partial);
             let mut output_file = std::fs::File::create(&partial)?;

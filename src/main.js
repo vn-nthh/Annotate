@@ -27,6 +27,8 @@ const apikeyInput = document.getElementById('apikey-input');
 const apikeyToggle = document.getElementById('apikey-toggle');
 const azureConfigSection = document.getElementById('section-azure-config');
 const azureEndpointInput = document.getElementById('azure-endpoint-input');
+const openrouterKeyInput = document.getElementById('openrouter-key-input');
+const openrouterKeyToggle = document.getElementById('openrouter-key-toggle');
 const hotkeyBtn = document.getElementById('hotkey-btn');
 const hotkeyDisplay = document.getElementById('hotkey-display');
 const statusText = document.getElementById('status-text');
@@ -139,6 +141,8 @@ async function loadSavedSettings() {
     modeSelect.value = savedMode;
   }
   await toggleApiKeyVisibility(modeSelect.value);
+  await loadOpenRouterKey();
+  updateSubSummarizeBtn();
 
   const savedHotkey = await store.get('hotkey');
   if (savedHotkey) {
@@ -240,10 +244,21 @@ function setupEventListeners() {
     setStatus('Endpoint saved', false);
   });
 
+  openrouterKeyInput.addEventListener('change', async () => {
+    await invoke('save_openrouter_api_key', { key: openrouterKeyInput.value }).catch(console.error);
+    setStatus(openrouterKeyInput.value.trim() ? 'OpenRouter key saved' : 'OpenRouter key cleared', false);
+    updateSubSummarizeBtn();
+  });
+
   // API key visibility toggle
   apikeyToggle.addEventListener('click', () => {
     const isPassword = apikeyInput.type === 'password';
     apikeyInput.type = isPassword ? 'text' : 'password';
+  });
+
+  openrouterKeyToggle.addEventListener('click', () => {
+    const isPassword = openrouterKeyInput.type === 'password';
+    openrouterKeyInput.type = isPassword ? 'text' : 'password';
   });
 
   // Hotkey recorder
@@ -316,6 +331,17 @@ async function loadProviderSettings(mode) {
   }
 
   apikeyInput.value = '';
+}
+
+async function loadOpenRouterKey() {
+  openrouterKeyInput.value = await invoke('load_openrouter_api_key').catch(() => null) || '';
+  updateSubSummarizeBtn();
+}
+
+async function maybeLoadOpenRouterKey() {
+  if (!openrouterKeyInput.value) {
+    await loadOpenRouterKey();
+  }
 }
 
 /**
@@ -1759,17 +1785,22 @@ async function maybeCorrectGrammar(text) {
 let subSelectedFile = null;
 let subSrtEntries = null;
 let subGenerating = false;
+let subSummarizing = false;
 
 // Elements
 const subFileZone = document.getElementById('sub-file-zone');
 const subFileLabel = document.getElementById('sub-file-label');
 const subFileName = document.getElementById('sub-file-name');
 const subGenerateBtn = document.getElementById('sub-generate-btn');
+const subSummarizeBtn = document.getElementById('sub-summarize-btn');
 const subProgress = document.getElementById('sub-progress');
 const subProgressFill = document.getElementById('sub-progress-fill');
 const subProgressText = document.getElementById('sub-progress-text');
 const subResult = document.getElementById('sub-result');
 const subResultTitle = document.getElementById('sub-result-title');
+const subSummary = document.getElementById('sub-summary');
+const subSummaryText = document.getElementById('sub-summary-text');
+const subSummaryCopyBtn = document.getElementById('sub-summary-copy-btn');
 const subPreview = document.getElementById('sub-preview');
 const subPreviewCount = document.getElementById('sub-preview-count');
 const subSaveBtn = document.getElementById('sub-save-btn');
@@ -1810,6 +1841,10 @@ async function initSubtitlingUI() {
 
   // Save button
   subSaveBtn.addEventListener('click', saveSrtFile);
+
+  // Summary button
+  subSummarizeBtn.addEventListener('click', summarizeSubtitles);
+  subSummaryCopyBtn.addEventListener('click', copySubSummary);
 
   // New File button
   subNewBtn.addEventListener('click', resetSubtitling);
@@ -1952,8 +1987,10 @@ async function pickSubFile() {
       // Reset result
       subResult.style.display = 'none';
       subSrtEntries = null;
+      resetSubSummary();
 
       updateSubGenerateBtn();
+      updateSubSummarizeBtn();
     }
   } catch (err) {
     console.error('[Subtitle] File picker failed:', err);
@@ -1977,6 +2014,72 @@ function updateSubGenerateBtn() {
   subGenerateBtn.disabled = !(ffmpegOk && vadOk && hasFile && notGenerating && engineOk);
 }
 
+function updateSubSummarizeBtn() {
+  const hasEntries = !!subSrtEntries && subSrtEntries.length > 0;
+  const hasKey = !!openrouterKeyInput?.value?.trim();
+  subSummarizeBtn.disabled = subGenerating || subSummarizing || !hasEntries || !hasKey;
+  subSummarizeBtn.title = hasKey
+    ? ''
+    : 'Add an OpenRouter API key in Settings to enable summaries';
+}
+
+function resetSubSummary() {
+  subSummarizing = false;
+  subSummary.style.display = 'none';
+  subSummaryText.textContent = '';
+  subSummaryCopyBtn.textContent = 'Copy';
+  updateSubSummarizeBtn();
+}
+
+async function copySubSummary() {
+  const summary = subSummaryText.textContent.trim();
+  if (!summary) return;
+
+  try {
+    await navigator.clipboard.writeText(summary);
+    subSummaryCopyBtn.textContent = 'Copied!';
+    setTimeout(() => {
+      subSummaryCopyBtn.textContent = 'Copy';
+    }, 1200);
+  } catch (err) {
+    console.error('[Subtitle] Summary copy failed:', err);
+  }
+}
+
+async function summarizeSubtitles() {
+  if (!subSrtEntries || subSrtEntries.length === 0 || subSummarizing) return;
+
+  subSummarizing = true;
+  subSummarizeBtn.textContent = 'Summarizing...';
+  subProgress.style.display = '';
+  subProgressFill.style.width = '30%';
+  subProgressText.textContent = 'Summarizing subtitles...';
+  updateSubSummarizeBtn();
+
+  try {
+    const summary = await invoke('summarize_subtitles', { entries: subSrtEntries });
+    const trimmed = (summary || '').trim();
+    if (!trimmed) {
+      throw new Error('Summary was empty');
+    }
+
+    subSummaryText.textContent = trimmed;
+    subSummary.style.display = '';
+    subSummaryCopyBtn.textContent = 'Copy';
+    subProgressText.textContent = 'Summary ready';
+    subProgressFill.style.width = '100%';
+    subProgress.style.display = 'none';
+  } catch (err) {
+    subProgressText.textContent = 'Error: ' + (err.message || err);
+    subProgressFill.style.width = '100%';
+    console.error('[Subtitle] Summary failed:', err);
+  } finally {
+    subSummarizing = false;
+    subSummarizeBtn.textContent = 'Summarize';
+    updateSubSummarizeBtn();
+  }
+}
+
 async function generateSubtitles() {
   if (!subSelectedFile || subGenerating) return;
 
@@ -1987,6 +2090,7 @@ async function generateSubtitles() {
   subProgressFill.style.width = '0%';
   subProgressText.textContent = 'Starting...';
   subResult.style.display = 'none';
+  resetSubSummary();
 
   try {
     const selectedMode = modeSelect.value;
@@ -2019,6 +2123,8 @@ async function generateSubtitles() {
       }
     }
 
+    await maybeLoadOpenRouterKey();
+
     // Get dictionary terms as prompt
     let prompt = null;
     const dict = await store.get('dictionary');
@@ -2042,6 +2148,7 @@ async function generateSubtitles() {
     });
 
     subSrtEntries = entries;
+    updateSubSummarizeBtn();
 
     if (entries.length === 0) {
       subProgressText.textContent = 'No speech detected in the audio.';
@@ -2064,6 +2171,7 @@ async function generateSubtitles() {
       subLangGroup.style.display = 'none';
       subProgress.style.display = 'none';
       subResult.style.display = '';
+      updateSubSummarizeBtn();
     }
   } catch (err) {
     subProgressText.textContent = 'Error: ' + (err.message || err);
@@ -2073,6 +2181,7 @@ async function generateSubtitles() {
     subGenerating = false;
     subGenerateBtn.textContent = 'Generate Subtitles';
     updateSubGenerateBtn();
+    updateSubSummarizeBtn();
   }
 }
 
@@ -2081,6 +2190,7 @@ function resetSubtitling() {
   subSelectedFile = null;
   subSrtEntries = null;
   subGenerating = false;
+  subSummarizing = false;
 
   // Restore setup UI
   subFileZone.style.display = '';
@@ -2093,6 +2203,7 @@ function resetSubtitling() {
   subProgress.style.display = 'none';
   subProgressFill.style.width = '0%';
   maybeHideSubDeps();
+  resetSubSummary();
 
   // Hide result
   subResult.style.display = 'none';
@@ -2101,6 +2212,7 @@ function resetSubtitling() {
   subResultTitle.textContent = '';
 
   updateSubGenerateBtn();
+  updateSubSummarizeBtn();
 }
 
 async function saveSrtFile() {

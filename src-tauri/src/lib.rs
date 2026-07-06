@@ -6,6 +6,7 @@ mod whisper_local;
 mod google_auth;
 mod gec;
 mod vad;
+mod summary;
 pub mod subtitle;
 
 use audio::{enumerate_capture_devices, apply_device_override};
@@ -140,6 +141,7 @@ async fn azure_stream_cancel() {
 const CREDENTIAL_SERVICE: &str = "Annotate";
 const GROQ_CREDENTIAL_USER: &str = "GroqApiKey";
 const AZURE_CREDENTIAL_USER: &str = "AzureFoundryApiKey";
+const OPENROUTER_CREDENTIAL_USER: &str = "OpenRouterApiKey";
 
 /// Save the Groq API key to Windows Credential Manager.
 /// The key is never written to disk in plaintext.
@@ -177,6 +179,37 @@ fn save_azure_api_key(key: String) -> Result<(), String> {
 #[tauri::command]
 fn load_azure_api_key() -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, AZURE_CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    match entry.get_password() {
+        Ok(key) => Ok(Some(key)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(e) => Err(format!("Failed to load credential: {}", e)),
+    }
+}
+
+/// Save the OpenRouter API key to Windows Credential Manager.
+/// Empty input clears the saved credential.
+#[tauri::command]
+fn save_openrouter_api_key(key: String) -> Result<(), String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, OPENROUTER_CREDENTIAL_USER)
+        .map_err(|e| format!("Credential entry error: {}", e))?;
+    let key = key.trim();
+    if key.is_empty() {
+        return match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(format!("Failed to clear credential: {}", e)),
+        };
+    }
+
+    entry
+        .set_password(key)
+        .map_err(|e| format!("Failed to save credential: {}", e))
+}
+
+/// Load the OpenRouter API key from Windows Credential Manager.
+#[tauri::command]
+fn load_openrouter_api_key() -> Result<Option<String>, String> {
+    let entry = keyring::Entry::new(CREDENTIAL_SERVICE, OPENROUTER_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
     match entry.get_password() {
         Ok(key) => Ok(Some(key)),
@@ -434,6 +467,17 @@ fn save_srt_file(entries: Vec<subtitle::SrtEntry>, output_path: String) -> Resul
 #[tauri::command]
 fn format_srt_preview(entries: Vec<subtitle::SrtEntry>) -> String {
     subtitle::format_srt(&entries)
+}
+
+/// Summarize subtitle entries with OpenRouter GPT-5.4 Mini.
+#[tauri::command]
+async fn summarize_subtitles(entries: Vec<subtitle::SrtEntry>) -> Result<String, String> {
+    let api_key = load_openrouter_api_key()?
+        .ok_or_else(|| "OpenRouter API key not configured. Add it in Settings.".to_string())?;
+
+    summary::summarize_entries(&api_key, &entries)
+        .await
+        .map_err(|e| format!("Subtitle summary failed: {}", e))
 }
 
 // ── CUDA Runtime Commands ──────────────────────────────
@@ -903,6 +947,8 @@ pub fn run() {
             load_api_key,
             save_azure_api_key,
             load_azure_api_key,
+            save_openrouter_api_key,
+            load_openrouter_api_key,
             check_whisper_model,
             get_whisper_model_path,
             download_whisper_model,
@@ -929,6 +975,7 @@ pub fn run() {
             generate_subtitles,
             save_srt_file,
             format_srt_preview,
+            summarize_subtitles,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

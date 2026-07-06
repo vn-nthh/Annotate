@@ -28,6 +28,7 @@
 - **Custom dictionary** — Add domain-specific terms to improve transcription accuracy
 - **Grammar correction** — On-device grammar cleanup powered by a local GEC (GECtor) model
 - **Subtitle generation** — Generate `.srt` subtitles from any audio/video file using VAD + Whisper
+- **Subtitle summaries** — Summarize generated subtitles with OpenRouter using GPT-5.4 Mini
 - **Google Drive sync** — Sync dictionary and transcription history across devices
 - **System tray** — Minimize to tray for always-on access
 - **Dark mode** — Light and dark themes

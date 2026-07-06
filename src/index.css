@@ -515,6 +515,13 @@ body::before {
   line-height: 1.5;
 }
 
+.setting-hint {
+  margin-top: 8px;
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+  line-height: 1.45;
+}
+
 /* ============================================
    Home — Transcription History
    ============================================ */
@@ -1594,6 +1601,45 @@ body::before {
   background: #fff;
 }
 
+.sub-summarize-btn {
+  padding: 10px 16px;
+  font-family: var(--font-main);
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--paper);
+  background: #5b5b63;
+  border: none;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s var(--ease-bounce), opacity 0.2s;
+}
+
+.sub-summarize-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.sub-summarize-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.sub-summarize-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sub-result-actions > button {
+  flex: 1;
+}
+
+[data-theme="dark"] .sub-summarize-btn {
+  background: #7f7f87;
+  color: #1a1a1e;
+}
+
+[data-theme="dark"] .sub-summarize-btn:hover:not(:disabled) {
+  background: #a8a8b0;
+}
+
 /* Progress */
 .sub-progress {
   margin-bottom: 16px;
@@ -1638,6 +1684,72 @@ body::before {
 
 .sub-result-count:empty {
   display: none;
+}
+
+.sub-summary {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+
+.sub-summary-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.sub-summary-label {
+  font-family: var(--font-main);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--ink-light);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.sub-summary-copy-btn {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  color: var(--ink-light);
+  font-family: var(--font-main);
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+}
+
+.sub-summary-copy-btn:hover {
+  color: var(--ink);
+  border-color: var(--ink-faint);
+  background: var(--paper-hover);
+}
+
+.sub-summary-text {
+  font-size: 0.84rem;
+  color: var(--ink);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+[data-theme="dark"] .sub-summary {
+  background: var(--paper-warm);
+}
+
+[data-theme="dark"] .sub-summary-copy-btn {
+  background: transparent;
+  color: var(--ink-light);
+}
+
+[data-theme="dark"] .sub-summary-copy-btn:hover {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .sub-preview {

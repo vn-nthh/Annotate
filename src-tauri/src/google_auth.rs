@@ -91,13 +91,15 @@ pub async fn google_refresh_access_token(client_id: String) -> Result<OAuthToken
     validate_client_id(&client_id)?;
     let refresh_token = load_refresh_token()?.ok_or("No Google refresh token is stored")?;
     let client = reqwest::Client::new();
+    let body = urlencoded_form(&[
+        ("client_id", client_id.as_str()),
+        ("refresh_token", refresh_token.as_str()),
+        ("grant_type", "refresh_token"),
+    ]);
     let response = client
         .post(TOKEN_URL)
-        .form(&[
-            ("client_id", client_id.as_str()),
-            ("refresh_token", refresh_token.as_str()),
-            ("grant_type", "refresh_token"),
-        ])
+        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(body)
         .send()
         .await
         .map_err(|error| format!("Google token refresh failed: {error}"))?;
@@ -200,19 +202,29 @@ async fn exchange_authorization_code(
     verifier: &str,
 ) -> Result<GoogleTokenResponse, String> {
     let client = reqwest::Client::new();
+    let body = urlencoded_form(&[
+        ("code", code.code.as_str()),
+        ("client_id", client_id),
+        ("redirect_uri", code.redirect_uri.as_str()),
+        ("grant_type", "authorization_code"),
+        ("code_verifier", verifier),
+    ]);
     let response = client
         .post(TOKEN_URL)
-        .form(&[
-            ("code", code.code.as_str()),
-            ("client_id", client_id),
-            ("redirect_uri", code.redirect_uri.as_str()),
-            ("grant_type", "authorization_code"),
-            ("code_verifier", verifier),
-        ])
+        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(body)
         .send()
         .await
         .map_err(|error| format!("Google token exchange failed: {error}"))?;
     parse_token_response(response).await
+}
+
+fn urlencoded_form(fields: &[(&str, &str)]) -> String {
+    let mut serializer = url::form_urlencoded::Serializer::new(String::new());
+    for (key, value) in fields {
+        serializer.append_pair(key, value);
+    }
+    serializer.finish()
 }
 
 async fn parse_token_response(response: reqwest::Response) -> Result<GoogleTokenResponse, String> {

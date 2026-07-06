@@ -186,12 +186,22 @@
           <h3 class="sub-result-title" id="sub-result-title"></h3>
           <span class="sub-result-count" id="sub-preview-count"></span>
 
+          <!-- Summary -->
+          <div class="sub-summary" id="sub-summary" style="display:none;">
+            <div class="sub-summary-header">
+              <span class="sub-summary-label">Summary</span>
+              <button class="sub-summary-copy-btn" id="sub-summary-copy-btn">Copy</button>
+            </div>
+            <div class="sub-summary-text" id="sub-summary-text"></div>
+          </div>
+
           <!-- Preview -->
           <pre class="sub-preview" id="sub-preview"></pre>
 
           <!-- Action buttons -->
           <div class="sub-result-actions">
             <button class="sub-save-btn" id="sub-save-btn">Save .srt File</button>
+            <button class="sub-summarize-btn" id="sub-summarize-btn" disabled>Summarize</button>
             <button class="sub-new-btn" id="sub-new-btn">New File</button>
           </div>
         </div>
@@ -305,6 +315,29 @@
             </section>
           </div>
         </div>
+
+        <hr class="divider" />
+
+        <!-- OpenRouter Summary Key -->
+        <section class="setting-group">
+          <label class="setting-label" for="openrouter-key-input">OpenRouter API Key</label>
+          <div class="input-wrap">
+            <input
+              type="password"
+              id="openrouter-key-input"
+              placeholder="Paste OpenRouter API key"
+              spellcheck="false"
+              autocomplete="off"
+            />
+            <button id="openrouter-key-toggle" class="icon-btn" title="Show/hide key">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+          <p class="setting-hint">Used only for subtitle summaries with GPT-5.4 Mini.</p>
+        </section>
 
         <!-- Local Whisper Model Status (conditional) -->
         <div id="section-local-whisper" style="display: none;">
