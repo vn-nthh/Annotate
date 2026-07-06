@@ -101,14 +101,9 @@ pub async fn ensure_ffmpeg(
         .timeout(std::time::Duration::from_secs(600))
         .build()?;
 
-    let downloaded = crate::download::download_verified(
-        &client,
-        FFMPEG_URL,
-        &path,
-        FFMPEG_SHA256,
-        progress_cb,
-    )
-    .await?;
+    let downloaded =
+        crate::download::download_verified(&client, FFMPEG_URL, &path, FFMPEG_SHA256, progress_cb)
+            .await?;
 
     log::info!("[Subtitle] FFmpeg downloaded: {} bytes", downloaded);
     Ok(())
@@ -615,6 +610,13 @@ pub async fn generate_subtitles(
     let audio_duration = pcm.len() as f64 / 16000.0;
     log::info!("[Subtitle] Audio duration: {:.1}s", audio_duration);
 
+    if engine == "azure-mai" {
+        let key = api_key.ok_or("API key required for Azure MAI engine")?;
+        let endpoint = azure_endpoint.ok_or("Azure Foundry endpoint required")?;
+        return generate_azure_mai_subtitles(&pcm, key, endpoint, prompt, language, progress_cb)
+            .await;
+    }
+
     // Stage 3: VAD — detect speech segments
     progress_cb(SubtitleProgress {
         stage: "vad".into(),
@@ -673,18 +675,6 @@ pub async fn generate_subtitles(
                 let key = api_key.ok_or("API key required for Groq engine")?;
                 transcribe_segments_groq(&audio_b64, key, prompt, language).await?
             }
-            "azure-mai" => {
-                let key = api_key.ok_or("API key required for Azure MAI engine")?;
-                let endpoint = azure_endpoint.ok_or("Azure Foundry endpoint required")?;
-                transcribe_segments_azure_mai(
-                    &audio_b64,
-                    key,
-                    endpoint,
-                    prompt,
-                    language,
-                )
-                .await?
-            }
             _ => return Err(format!("Unknown engine: {}", engine)),
         };
 
@@ -711,6 +701,50 @@ pub async fn generate_subtitles(
         "[Subtitle] Generated {} SRT entries from {} whisper segments",
         srt_entries.len(),
         all_whisper_segments.len()
+    );
+
+    Ok(srt_entries)
+}
+
+async fn generate_azure_mai_subtitles(
+    pcm: &[f32],
+    api_key: &str,
+    endpoint: &str,
+    prompt: Option<&str>,
+    language: Option<&str>,
+    progress_cb: impl Fn(SubtitleProgress) + Send + Clone + 'static,
+) -> Result<Vec<SrtEntry>, String> {
+    progress_cb(SubtitleProgress {
+        stage: "transcribe".into(),
+        current: 0,
+        total: 1,
+        message: "Transcribing full audio with Azure MAI...".into(),
+    });
+
+    let wav_bytes = pcm_to_wav_bytes(pcm)?;
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+    let raw_segments =
+        transcribe_segments_azure_mai(&audio_b64, api_key, endpoint, prompt, language).await?;
+    let whisper_segments = filter_segments(raw_segments);
+
+    if whisper_segments.is_empty() {
+        log::info!("[Subtitle] Azure MAI returned no speech segments");
+        return Ok(Vec::new());
+    }
+
+    progress_cb(SubtitleProgress {
+        stage: "format".into(),
+        current: 0,
+        total: 1,
+        message: "Formatting subtitles...".into(),
+    });
+
+    let srt_entries = segments_to_srt(&whisper_segments);
+
+    log::info!(
+        "[Subtitle] Generated {} SRT entries from {} Azure MAI segments",
+        srt_entries.len(),
+        whisper_segments.len()
     );
 
     Ok(srt_entries)

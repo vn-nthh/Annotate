@@ -247,6 +247,8 @@ function setupEventListeners() {
     const mode = modeSelect.value;
     await store.set('transcriptionMode', mode);
     await toggleApiKeyVisibility(mode);
+    maybeHideSubDeps();
+    updateSubGenerateBtn();
   });
 
   // API key — saved to Windows Credential Manager (never plaintext on disk)
@@ -1973,11 +1975,12 @@ async function checkSubDeps() {
   updateSubGenerateBtn();
 }
 
-/// Hide deps section when both FFmpeg and VAD are ready
+// Hide deps section when the selected subtitle engine has its dependencies.
 function maybeHideSubDeps() {
   const ffmpegOk = subFfmpegStatus.classList.contains('ready');
   const vadOk = subVadStatus.classList.contains('ready');
-  if (ffmpegOk && vadOk) {
+  const needsVad = modeSelect.value !== 'azure-mai';
+  if (ffmpegOk && (!needsVad || vadOk)) {
     subDeps.style.display = 'none';
   } else {
     subDeps.style.display = '';
@@ -2020,6 +2023,7 @@ async function pickSubFile() {
 function updateSubGenerateBtn() {
   const ffmpegOk = subFfmpegStatus.classList.contains('ready');
   const vadOk = subVadStatus.classList.contains('ready');
+  const needsVad = modeSelect.value !== 'azure-mai';
   const hasFile = !!subSelectedFile;
   const notGenerating = !subGenerating;
 
@@ -2031,7 +2035,9 @@ function updateSubGenerateBtn() {
     engineOk = true; // API key is fetched during generate
   }
 
-  subGenerateBtn.disabled = !(ffmpegOk && vadOk && hasFile && notGenerating && engineOk);
+  subGenerateBtn.disabled = !(
+    ffmpegOk && (!needsVad || vadOk) && hasFile && notGenerating && engineOk
+  );
 }
 
 function updateSubSummarizeBtn() {

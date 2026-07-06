@@ -20,6 +20,12 @@ const AVG_LOGPROB_THRESHOLD: f64 = -1.0;
 const COMPRESSION_RATIO_THRESHOLD: f64 = 2.4;
 const AZURE_SPEECH_API_VERSION: &str = "2025-10-15";
 const AZURE_MAI_MODEL: &str = "mai-transcribe-1.5";
+const AZURE_SUBTITLE_MAX_CHARS: usize = 84;
+const AZURE_SUBTITLE_MAX_WORDS: usize = 14;
+const AZURE_SUBTITLE_MAX_DURATION_MS: f64 = 6000.0;
+const AZURE_SUBTITLE_MAX_PAUSE_MS: f64 = 700.0;
+const AZURE_SUBTITLE_MIN_SENTENCE_CHUNK_MS: f64 = 1200.0;
+const AZURE_WORD_FALLBACK_DURATION_MS: f64 = 250.0;
 
 /// Establish the DNS/TLS/HTTP2 connection while the user is still speaking.
 /// The subsequent transcription request reuses the connection from `HTTP_CLIENT`.
@@ -102,6 +108,24 @@ struct AzurePhrase {
     offset_milliseconds: f64,
     #[serde(default, rename = "durationMilliseconds")]
     duration_milliseconds: f64,
+    #[serde(default)]
+    words: Vec<AzureWord>,
+}
+
+#[derive(Deserialize, Debug)]
+struct AzureWord {
+    text: String,
+    #[serde(default, rename = "offsetMilliseconds")]
+    offset_milliseconds: f64,
+    #[serde(default, rename = "durationMilliseconds")]
+    duration_milliseconds: f64,
+}
+
+#[derive(Debug)]
+struct AzureTimedWord {
+    text: String,
+    start_ms: f64,
+    end_ms: f64,
 }
 
 /// Transcribe audio using Groq's Whisper Large V3 Turbo API
@@ -410,7 +434,184 @@ pub async fn transcribe_segments_with_azure_mai(
     );
 
     let segments_start = Instant::now();
-    let mut segments: Vec<crate::subtitle::WhisperSegment> = result
+    let segments = azure_response_segments(&result);
+
+    log::info!(
+        "[Timing][azure-mai-segments] rust segment mapping: {:.1}ms segments={}",
+        segments_start.elapsed().as_secs_f64() * 1000.0,
+        segments.len()
+    );
+    log::info!(
+        "[Timing][azure-mai-segments] rust total: {:.1}ms",
+        total_start.elapsed().as_secs_f64() * 1000.0
+    );
+
+    Ok(segments)
+}
+
+fn azure_response_segments(
+    result: &AzureTranscriptionResponse,
+) -> Vec<crate::subtitle::WhisperSegment> {
+    let word_segments = azure_word_segments(result);
+    if !word_segments.is_empty() {
+        return word_segments;
+    }
+
+    let mut segments = azure_phrase_segments(result);
+    if segments.is_empty() {
+        let text = azure_response_text(result).trim().to_string();
+        if !text.is_empty() {
+            segments.push(crate::subtitle::WhisperSegment {
+                start: 0.0,
+                end: 1.0,
+                text,
+                no_speech_prob: 0.0,
+                avg_logprob: 0.0,
+                compression_ratio: 0.0,
+            });
+        }
+    }
+
+    segments
+}
+
+fn azure_word_segments(
+    result: &AzureTranscriptionResponse,
+) -> Vec<crate::subtitle::WhisperSegment> {
+    let mut words: Vec<AzureTimedWord> = result
+        .phrases
+        .iter()
+        .flat_map(|phrase| phrase.words.iter())
+        .filter_map(|word| {
+            let text = word.text.trim();
+            if text.is_empty() {
+                return None;
+            }
+
+            let start_ms = word.offset_milliseconds.max(0.0);
+            let duration_ms = if word.duration_milliseconds > 0.0 {
+                word.duration_milliseconds
+            } else {
+                AZURE_WORD_FALLBACK_DURATION_MS
+            };
+
+            Some(AzureTimedWord {
+                text: text.to_string(),
+                start_ms,
+                end_ms: (start_ms + duration_ms).max(start_ms + 1.0),
+            })
+        })
+        .collect();
+
+    words.sort_by(|a, b| {
+        a.start_ms
+            .partial_cmp(&b.start_ms)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut segments = Vec::new();
+    let mut chunk_words: Vec<String> = Vec::new();
+    let mut chunk_start_ms = 0.0;
+    let mut chunk_end_ms = 0.0;
+
+    for word in words {
+        if chunk_words.is_empty() {
+            chunk_start_ms = word.start_ms;
+        } else if should_start_new_azure_chunk(&chunk_words, chunk_start_ms, chunk_end_ms, &word) {
+            push_azure_word_segment(
+                &mut segments,
+                &mut chunk_words,
+                chunk_start_ms,
+                chunk_end_ms,
+            );
+            chunk_start_ms = word.start_ms;
+        }
+
+        chunk_end_ms = word.end_ms;
+        chunk_words.push(word.text);
+
+        if chunk_end_ms - chunk_start_ms >= AZURE_SUBTITLE_MIN_SENTENCE_CHUNK_MS
+            && chunk_words
+                .last()
+                .map_or(false, |text| azure_ends_sentence(text))
+        {
+            push_azure_word_segment(
+                &mut segments,
+                &mut chunk_words,
+                chunk_start_ms,
+                chunk_end_ms,
+            );
+        }
+    }
+
+    push_azure_word_segment(
+        &mut segments,
+        &mut chunk_words,
+        chunk_start_ms,
+        chunk_end_ms,
+    );
+
+    segments
+}
+
+fn should_start_new_azure_chunk(
+    chunk_words: &[String],
+    chunk_start_ms: f64,
+    chunk_end_ms: f64,
+    next_word: &AzureTimedWord,
+) -> bool {
+    let gap_ms = next_word.start_ms - chunk_end_ms;
+    if gap_ms > AZURE_SUBTITLE_MAX_PAUSE_MS {
+        return true;
+    }
+
+    let existing_chars: usize = chunk_words.iter().map(|word| word.chars().count()).sum();
+    let projected_chars = existing_chars + chunk_words.len() + next_word.text.chars().count();
+    if projected_chars > AZURE_SUBTITLE_MAX_CHARS {
+        return true;
+    }
+
+    if chunk_words.len() >= AZURE_SUBTITLE_MAX_WORDS {
+        return true;
+    }
+
+    if next_word.end_ms - chunk_start_ms > AZURE_SUBTITLE_MAX_DURATION_MS {
+        return true;
+    }
+
+    chunk_end_ms - chunk_start_ms >= AZURE_SUBTITLE_MIN_SENTENCE_CHUNK_MS
+        && chunk_words
+            .last()
+            .map_or(false, |text| azure_ends_sentence(text))
+}
+
+fn push_azure_word_segment(
+    segments: &mut Vec<crate::subtitle::WhisperSegment>,
+    chunk_words: &mut Vec<String>,
+    chunk_start_ms: f64,
+    chunk_end_ms: f64,
+) {
+    if chunk_words.is_empty() {
+        return;
+    }
+
+    let start = chunk_start_ms / 1000.0;
+    let end = chunk_end_ms.max(chunk_start_ms + 1.0) / 1000.0;
+    segments.push(crate::subtitle::WhisperSegment {
+        start,
+        end,
+        text: chunk_words.join(" "),
+        no_speech_prob: 0.0,
+        avg_logprob: 0.0,
+        compression_ratio: 0.0,
+    });
+    chunk_words.clear();
+}
+
+fn azure_phrase_segments(
+    result: &AzureTranscriptionResponse,
+) -> Vec<crate::subtitle::WhisperSegment> {
+    result
         .phrases
         .iter()
         .filter_map(|phrase| {
@@ -435,33 +636,14 @@ pub async fn transcribe_segments_with_azure_mai(
                 compression_ratio: 0.0,
             })
         })
-        .collect();
+        .collect()
+}
 
-    if segments.is_empty() {
-        let text = azure_response_text(&result).trim().to_string();
-        if !text.is_empty() {
-            segments.push(crate::subtitle::WhisperSegment {
-                start: 0.0,
-                end: 1.0,
-                text,
-                no_speech_prob: 0.0,
-                avg_logprob: 0.0,
-                compression_ratio: 0.0,
-            });
-        }
-    }
-
-    log::info!(
-        "[Timing][azure-mai-segments] rust segment mapping: {:.1}ms segments={}",
-        segments_start.elapsed().as_secs_f64() * 1000.0,
-        segments.len()
-    );
-    log::info!(
-        "[Timing][azure-mai-segments] rust total: {:.1}ms",
-        total_start.elapsed().as_secs_f64() * 1000.0
-    );
-
-    Ok(segments)
+fn azure_ends_sentence(text: &str) -> bool {
+    text.trim_end()
+        .chars()
+        .last()
+        .map_or(false, |ch| matches!(ch, '.' | '!' | '?'))
 }
 
 fn build_azure_mai_form(
@@ -660,6 +842,72 @@ mod tests {
     }
 
     #[test]
+    fn maps_azure_words_to_absolute_subtitle_segments() {
+        let response = AzureTranscriptionResponse {
+            combined_phrases: vec![AzureCombinedPhrase {
+                text: "Ignored when words are available".to_string(),
+            }],
+            phrases: vec![AzurePhrase {
+                text: "This phrase offset should not be used".to_string(),
+                offset_milliseconds: 10_000.0,
+                duration_milliseconds: 30_000.0,
+                words: vec![
+                    AzureWord {
+                        text: "Hello".to_string(),
+                        offset_milliseconds: 500.0,
+                        duration_milliseconds: 300.0,
+                    },
+                    AzureWord {
+                        text: "world.".to_string(),
+                        offset_milliseconds: 900.0,
+                        duration_milliseconds: 400.0,
+                    },
+                    AzureWord {
+                        text: "Next".to_string(),
+                        offset_milliseconds: 2300.0,
+                        duration_milliseconds: 300.0,
+                    },
+                    AzureWord {
+                        text: "chunk.".to_string(),
+                        offset_milliseconds: 2700.0,
+                        duration_milliseconds: 300.0,
+                    },
+                ],
+            }],
+        };
+
+        let segments = azure_response_segments(&response);
+
+        assert_eq!(segments.len(), 2);
+        assert_eq!(segments[0].text, "Hello world.");
+        assert_eq!(segments[1].text, "Next chunk.");
+        assert_close(segments[0].start, 0.5);
+        assert_close(segments[0].end, 1.3);
+        assert_close(segments[1].start, 2.3);
+        assert_close(segments[1].end, 3.0);
+    }
+
+    #[test]
+    fn falls_back_to_azure_phrase_timestamps_without_words() {
+        let response = AzureTranscriptionResponse {
+            combined_phrases: Vec::new(),
+            phrases: vec![AzurePhrase {
+                text: "Phrase timed subtitle".to_string(),
+                offset_milliseconds: 1234.0,
+                duration_milliseconds: 2500.0,
+                words: Vec::new(),
+            }],
+        };
+
+        let segments = azure_response_segments(&response);
+
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].text, "Phrase timed subtitle");
+        assert_close(segments[0].start, 1.234);
+        assert_close(segments[0].end, 3.734);
+    }
+
+    #[test]
     fn maps_compact_language_to_azure_locale() {
         assert_eq!(azure_locales(Some("en")), Some(vec!["en-US".to_string()]));
         assert_eq!(azure_locales(Some("vi")), Some(vec!["vi-VN".to_string()]));
@@ -668,5 +916,12 @@ mod tests {
             Some(vec!["en-GB".to_string()])
         );
         assert_eq!(azure_locales(Some("auto")), None);
+    }
+
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 0.000_001,
+            "expected {expected}, got {actual}"
+        );
     }
 }
