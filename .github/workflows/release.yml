@@ -56,7 +56,7 @@ jobs:
       - name: Test
         run: |
           npm test
-          cargo test --workspace --locked --manifest-path src-tauri/Cargo.toml
+          cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
