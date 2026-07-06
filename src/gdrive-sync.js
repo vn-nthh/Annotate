@@ -88,18 +88,22 @@ export async function initSync() {
 
   if (hasRefreshToken) {
     emitSignIn(true, userInfo);
-    // Try to refresh and sync
-    try {
-      await ensureValidToken();
-      emitStatus('synced', 'Connected');
-      startAutoSync();
-    } catch (err) {
-      console.warn('[Sync] Token refresh failed, need re-auth:', err);
-      emitStatus('error', 'Session expired');
-    }
+    // Refresh and sync after the UI is already usable.
+    void bootstrapSignedInSync();
   } else {
     emitSignIn(false, null);
     emitStatus('disconnected', 'Not signed in');
+  }
+}
+
+async function bootstrapSignedInSync() {
+  try {
+    await ensureValidToken();
+    emitStatus('synced', 'Connected');
+    startAutoSync();
+  } catch (err) {
+    console.warn('[Sync] Token refresh failed, need re-auth:', err);
+    emitStatus('error', 'Session expired');
   }
 }
 

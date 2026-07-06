@@ -78,15 +78,35 @@ async function init() {
 
   await loadTheme();
   setupTabNavigation();
-  await loadAudioDevices();
-  await loadSavedSettings();
   setupEventListeners();
   await setupHotkeyListener();
   renderHistory();
   renderDictionary();
-  await initSyncUI();
-  await initGrammarUI();
-  await initSubtitlingUI();
+
+  // Defer slower feature initialization until after the first paint.
+  void bootstrapDeferredStartup();
+}
+
+async function bootstrapDeferredStartup() {
+  await afterFirstPaint();
+
+  // Restore basic preferences first, then let feature panels finish in parallel.
+  await Promise.allSettled([
+    loadAudioDevices(),
+    loadSavedSettings(),
+  ]);
+
+  await Promise.allSettled([
+    initSyncUI(),
+    initGrammarUI(),
+    initSubtitlingUI(),
+  ]);
+}
+
+function afterFirstPaint() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 }
 
 // ── Tab Navigation ─────────────────────────────────────
