@@ -531,6 +531,7 @@ async function setupHotkeyListener() {
 
     // Show throbber
     try {
+      await emit('throbber-listen', {});
       await invoke('show_throbber');
     } catch (err) {
       console.error('Throbber show failed:', err);
