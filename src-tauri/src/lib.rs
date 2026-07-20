@@ -260,21 +260,33 @@ async fn download_whisper_model(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Load the whisper model — spawns worker process and loads model
+/// Load the whisper model — spawns worker process and loads model.
+///
+/// `acceleration` selects the sidecar backend: `"cuda"` (default) or `"vulkan"`.
 #[tauri::command]
-async fn load_whisper_model(app: AppHandle) -> Result<(), String> {
+async fn load_whisper_model(
+    app: AppHandle,
+    acceleration: Option<String>,
+) -> Result<(), String> {
     let data_dir = app
         .path()
         .app_local_data_dir()
         .map_err(|e| e.to_string())?;
-    whisper_local::ensure_loaded(&data_dir).await
+    let backend = whisper_local::AccelerationBackend::parse(acceleration.as_deref());
+    whisper_local::ensure_loaded(&data_dir, backend).await
 }
 
-/// Unload the whisper model — kills worker process, freeing all CUDA memory
+/// Unload the whisper model — kills worker process, freeing all GPU memory
 #[tauri::command]
 async fn unload_whisper_model() -> Result<(), String> {
     whisper_local::unload().await;
     Ok(())
+}
+
+/// Report which acceleration backend is currently loaded (if any).
+#[tauri::command]
+fn get_whisper_backend() -> Result<Option<String>, String> {
+    Ok(whisper_local::loaded_backend().map(|b| b.as_str().to_string()))
 }
 
 /// Transcribe audio locally via the worker process
@@ -1117,6 +1129,7 @@ pub fn run() {
             get_whisper_model_path,
             download_whisper_model,
             load_whisper_model,
+            get_whisper_backend,
             transcribe_audio_local,
             check_cuda_runtime,
             download_cuda_runtime,

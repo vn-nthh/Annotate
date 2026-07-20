@@ -343,6 +343,19 @@
         <div id="section-local-whisper" style="display: none;">
           <hr class="divider" />
           <section class="setting-group">
+            <label class="setting-label" for="acceleration-select">GPU Acceleration</label>
+            <div class="select-wrap">
+              <select id="acceleration-select">
+                <option value="cuda">CUDA (NVIDIA)</option>
+                <option value="vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
+              </select>
+              <span class="select-arrow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </span>
+            </div>
+            <p class="setting-hint">CUDA needs the CUDA runtime DLLs. Vulkan uses your GPU driver — no extra download.</p>
+          </section>
+          <section class="setting-group">
             <label class="setting-label">Model Status</label>
             <div id="whisper-model-status" class="whisper-model-status">
               <span id="whisper-status-text" class="whisper-status-text">Checking…</span>
@@ -356,7 +369,7 @@
               <span id="whisper-progress-text" class="whisper-progress-text">0%</span>
             </div>
           </section>
-          <section class="setting-group">
+          <section class="setting-group" id="section-cuda-runtime">
             <label class="setting-label">CUDA Runtime</label>
             <div id="cuda-runtime-status" class="whisper-model-status">
               <span id="cuda-status-text" class="whisper-status-text">Checking…</span>
@@ -367,6 +380,12 @@
                 <div id="cuda-progress-fill" class="whisper-progress-fill" style="width:0%"></div>
               </div>
               <span id="cuda-progress-text" class="whisper-progress-text">0%</span>
+            </div>
+          </section>
+          <section class="setting-group" id="section-vulkan-runtime" style="display:none;">
+            <label class="setting-label">Vulkan Runtime</label>
+            <div class="whisper-model-status">
+              <span id="vulkan-status-text" class="whisper-status-text">Uses system GPU drivers (Vulkan 1.2+)</span>
             </div>
           </section>
         </div>

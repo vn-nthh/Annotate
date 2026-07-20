@@ -1,8 +1,12 @@
 //! Local whisper transcription via a child worker process.
 //!
-//! The actual whisper.cpp + CUDA code lives in `whisper-worker` (a separate binary).
-//! This module spawns that process on-demand and communicates via stdin/stdout JSON.
-//! When unloaded, the process is killed and ALL CUDA memory (~573 MB) is freed.
+//! The actual whisper.cpp GPU code lives in separate sidecar binaries:
+//! - `whisper-worker` — CUDA backend
+//! - `whisper-worker-vulkan` — Vulkan backend
+//!
+//! This module spawns the selected process on-demand and communicates via
+//! stdin/stdout JSON. When unloaded, the process is killed and ALL GPU memory
+//! is freed by the OS.
 
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -16,12 +20,45 @@ const MODEL_URL: &str =
 const MODEL_FILENAME: &str = "ggml-large-v3-turbo-q5_0.bin";
 const MODEL_SHA256: &str = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
 
+// ── Acceleration backend ───────────────────────────────
+
+/// GPU acceleration backend for local Whisper inference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccelerationBackend {
+    Cuda,
+    Vulkan,
+}
+
+impl AccelerationBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Vulkan => "vulkan",
+        }
+    }
+
+    pub fn parse(value: Option<&str>) -> Self {
+        match value.map(str::trim).unwrap_or("cuda") {
+            "vulkan" | "vk" => Self::Vulkan,
+            _ => Self::Cuda,
+        }
+    }
+
+    fn worker_bin_stem(self) -> &'static str {
+        match self {
+            Self::Cuda => "whisper-worker",
+            Self::Vulkan => "whisper-worker-vulkan",
+        }
+    }
+}
+
 // ── Worker Process State ──────────────────────────────
 
 struct WorkerProcess {
     child: Child,
     stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
+    backend: AccelerationBackend,
 }
 
 static WORKER: LazyLock<Mutex<Option<WorkerProcess>>> = LazyLock::new(|| Mutex::new(None));
@@ -29,6 +66,10 @@ static WORKER: LazyLock<Mutex<Option<WorkerProcess>>> = LazyLock::new(|| Mutex::
 /// Flag tracking whether the model is loaded in the worker.
 static MODEL_LOADED: LazyLock<std::sync::Mutex<bool>> =
     LazyLock::new(|| std::sync::Mutex::new(false));
+
+/// Backend currently loaded (if any).
+static LOADED_BACKEND: LazyLock<std::sync::Mutex<Option<AccelerationBackend>>> =
+    LazyLock::new(|| std::sync::Mutex::new(None));
 
 // ── Path Helpers ──────────────────────────────────────
 
@@ -45,6 +86,11 @@ pub fn is_model_downloaded(data_dir: &std::path::Path) -> bool {
 /// Check if the worker is currently running and model loaded.
 pub fn is_loaded() -> bool {
     MODEL_LOADED.lock().ok().map_or(false, |g| *g)
+}
+
+/// Backend the running worker was started with, if loaded.
+pub fn loaded_backend() -> Option<AccelerationBackend> {
+    LOADED_BACKEND.lock().ok().and_then(|g| *g)
 }
 
 /// Download the model file.
@@ -74,31 +120,64 @@ pub async fn download_model(
 
 // ── Worker Process Management ──────────────────────────
 
-/// Find the whisper-worker executable next to the main app.
-fn worker_exe_path() -> PathBuf {
+/// Find the whisper worker executable for the given backend next to the main app.
+fn worker_exe_path(backend: AccelerationBackend) -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let dir = exe.parent().unwrap_or(std::path::Path::new("."));
+    let stem = backend.worker_bin_stem();
     let name = if cfg!(windows) {
-        "whisper-worker.exe"
+        format!("{stem}.exe")
     } else {
-        "whisper-worker"
+        stem.to_string()
     };
     dir.join(name)
 }
 
-/// Spawn the worker process and load the model.
-pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
-    // If we already have a running worker, keep using it. If it exited/crashed,
-    // clear stale state and respawn below.
+fn clear_loaded_flags() {
+    if let Ok(mut loaded) = MODEL_LOADED.lock() {
+        *loaded = false;
+    }
+    if let Ok(mut backend) = LOADED_BACKEND.lock() {
+        *backend = None;
+    }
+}
+
+fn mark_loaded(backend: AccelerationBackend) {
+    if let Ok(mut loaded) = MODEL_LOADED.lock() {
+        *loaded = true;
+    }
+    if let Ok(mut current) = LOADED_BACKEND.lock() {
+        *current = Some(backend);
+    }
+}
+
+/// Spawn the worker process for `backend` and load the model.
+///
+/// If a worker is already running for a different backend, it is unloaded first.
+pub async fn ensure_loaded(
+    data_dir: &std::path::Path,
+    backend: AccelerationBackend,
+) -> Result<(), String> {
+    // If we already have a running worker for this backend, keep using it.
+    // If it exited/crashed or was started with a different backend, clear and respawn.
     {
         let mut guard = WORKER.lock().await;
         if let Some(worker) = guard.as_mut() {
+            let same_backend = worker.backend == backend;
             match worker.child.try_wait() {
-                Ok(None) => {
-                    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-                        *loaded = true;
-                    }
+                Ok(None) if same_backend => {
+                    mark_loaded(backend);
                     return Ok(());
+                }
+                Ok(None) => {
+                    log::info!(
+                        "[WhisperLocal] Switching worker backend {} → {}",
+                        worker.backend.as_str(),
+                        backend.as_str()
+                    );
+                    // Drop the lock before unload() which also needs it.
+                    drop(guard);
+                    unload().await;
                 }
                 Ok(Some(status)) => {
                     log::warn!(
@@ -106,6 +185,7 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
                         status
                     );
                     *guard = None;
+                    clear_loaded_flags();
                 }
                 Err(err) => {
                     log::warn!(
@@ -113,19 +193,19 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
                         err
                     );
                     *guard = None;
+                    clear_loaded_flags();
                 }
             }
         }
     }
 
-    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-        *loaded = false;
-    }
+    clear_loaded_flags();
 
-    let worker_path = worker_exe_path();
+    let worker_path = worker_exe_path(backend);
     if !worker_path.exists() {
         return Err(format!(
-            "Whisper worker not found at: {}",
+            "Whisper {} worker not found at: {}. Rebuild with the matching backend feature.",
+            backend.as_str(),
             worker_path.display()
         ));
     }
@@ -135,7 +215,11 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
         return Err("Model not downloaded yet".into());
     }
 
-    log::info!("[WhisperLocal] Spawning worker: {:?}", worker_path);
+    log::info!(
+        "[WhisperLocal] Spawning {} worker: {:?}",
+        backend.as_str(),
+        worker_path
+    );
     let start = std::time::Instant::now();
 
     let mut cmd = tokio::process::Command::new(&worker_path);
@@ -146,9 +230,13 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
     #[cfg(windows)]
     cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to spawn whisper-worker: {}", e))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to spawn whisper-worker ({}): {}",
+            backend.as_str(),
+            e
+        )
+    })?;
 
     let stdin = child.stdin.take().ok_or("No stdin for worker")?;
     let stdout = child.stdout.take().ok_or("No stdout for worker")?;
@@ -158,6 +246,7 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
         child,
         stdin,
         stdout_reader,
+        backend,
     };
 
     // Send load command
@@ -169,26 +258,30 @@ pub async fn ensure_loaded(data_dir: &std::path::Path) -> Result<(), String> {
         let err = resp["error"].as_str().unwrap_or("Unknown error");
         // Kill the worker on failure
         let _ = worker.child.kill().await;
-        return Err(format!("Worker load failed: {}", err));
+        return Err(format!(
+            "Worker load failed ({}): {}",
+            backend.as_str(),
+            err
+        ));
     }
 
     log::info!(
-        "[WhisperLocal] Worker ready in {:.1}s",
+        "[WhisperLocal] {} worker ready in {:.1}s",
+        backend.as_str(),
         start.elapsed().as_secs_f64()
     );
 
     *WORKER.lock().await = Some(worker);
-    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-        *loaded = true;
-    }
+    mark_loaded(backend);
 
     Ok(())
 }
 
-/// Unload: kill the worker process, freeing ALL CUDA memory.
+/// Unload: kill the worker process, freeing ALL GPU memory held by the sidecar.
 pub async fn unload() {
     let mut guard = WORKER.lock().await;
     if let Some(mut worker) = guard.take() {
+        let backend = worker.backend;
         // Try graceful quit first
         let quit_cmd = serde_json::json!({"cmd": "quit"});
         let _ = send_command_no_response(&mut worker, &quit_cmd).await;
@@ -198,12 +291,13 @@ pub async fn unload() {
         let _ = worker.child.kill().await;
         let _ = worker.child.wait().await;
 
-        log::info!("[WhisperLocal] Worker process killed — CUDA memory freed");
+        log::info!(
+            "[WhisperLocal] {} worker process killed — GPU memory freed",
+            backend.as_str()
+        );
     }
 
-    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-        *loaded = false;
-    }
+    clear_loaded_flags();
 }
 
 /// Transcribe audio via the worker process.
@@ -577,4 +671,45 @@ async fn download_and_extract_dll_package(
     let _ = std::fs::remove_file(&archive_path);
     extract_result?;
     Ok(downloaded_so_far)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AccelerationBackend;
+
+    #[test]
+    fn parses_acceleration_backend() {
+        assert_eq!(
+            AccelerationBackend::parse(Some("vulkan")),
+            AccelerationBackend::Vulkan
+        );
+        assert_eq!(
+            AccelerationBackend::parse(Some("vk")),
+            AccelerationBackend::Vulkan
+        );
+        assert_eq!(
+            AccelerationBackend::parse(Some("cuda")),
+            AccelerationBackend::Cuda
+        );
+        assert_eq!(
+            AccelerationBackend::parse(None),
+            AccelerationBackend::Cuda
+        );
+        assert_eq!(
+            AccelerationBackend::parse(Some("unknown")),
+            AccelerationBackend::Cuda
+        );
+    }
+
+    #[test]
+    fn worker_stems_match_external_bin_names() {
+        assert_eq!(
+            AccelerationBackend::Cuda.worker_bin_stem(),
+            "whisper-worker"
+        );
+        assert_eq!(
+            AccelerationBackend::Vulkan.worker_bin_stem(),
+            "whisper-worker-vulkan"
+        );
+    }
 }

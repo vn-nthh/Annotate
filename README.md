@@ -24,7 +24,7 @@
 - **Three transcription engines**
   - **Web Speech** — Built-in, no setup required
   - **Groq Whisper** — Cloud-based, fast and accurate (requires free API key)
-  - **Local Whisper** — Fully offline, runs on your GPU via CUDA
+  - **Local Whisper** — Fully offline, runs on your GPU via CUDA or Vulkan
 - **Custom dictionary** — Add domain-specific terms to improve transcription accuracy
 - **Grammar correction** — On-device grammar cleanup powered by a local GEC (GECtor) model
 - **Subtitle generation** — Generate `.srt` subtitles from any audio/video file using VAD + Whisper
@@ -59,11 +59,20 @@ Grab the latest installer from [Releases](https://github.com/vn-nthh/Annotate/re
 
 ### Build from Source
 
-**Prerequisites:** [Node.js](https://nodejs.org/) (LTS), [Rust](https://rustup.rs/), [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+**Prerequisites:**
+- [Node.js](https://nodejs.org/) (LTS)
+- [Rust](https://rustup.rs/)
+- [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) (C++)
+- [CMake](https://cmake.org/download/)
+- **CUDA local mode:** [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) (`CUDA_PATH` set)
+- **Vulkan local mode:** [LunarG Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set)
 
 ```bash
 # Install frontend dependencies
 npm install
+
+# Build CUDA + Vulkan whisper sidecars (requires the SDKs above)
+npm run build:worker
 
 # Run in development mode
 npm run dev
@@ -71,6 +80,12 @@ npm run dev
 # Build release installers
 npm run build
 ```
+
+Local Whisper ships two sidecar binaries:
+- `whisper-worker` — CUDA backend (NVIDIA)
+- `whisper-worker-vulkan` — Vulkan backend (AMD / Intel / NVIDIA)
+
+Pick the backend in **Settings → GPU Acceleration**, or during onboarding.
 
 ### Google Drive Sync (Optional)
 

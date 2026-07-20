@@ -87,11 +87,11 @@ const ONBOARDING_COPY = {
   },
   local: {
     title: 'Offline local transcription',
-    body: 'Local Whisper keeps audio on this machine. CUDA is wired today; Vulkan is available as a saved preference for future support.',
+    body: 'Local Whisper keeps audio on this machine and can run on CUDA or Vulkan.',
     steps: [
-      'Choose CUDA for the current local acceleration path.',
-      'Choose Vulkan only if you want the preference saved ahead of future support.',
-      'The local model download and load controls are available in Settings.'
+      'Choose CUDA for NVIDIA GPUs with the CUDA runtime.',
+      'Choose Vulkan for AMD, Intel, or NVIDIA GPUs using your existing drivers.',
+      'Download and load the local model from Settings after setup.'
     ]
   }
 };

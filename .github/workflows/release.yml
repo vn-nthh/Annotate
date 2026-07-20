@@ -43,14 +43,40 @@ jobs:
             ConvertTo-Json |
             Set-Content -Encoding utf8 src/oauth.config.json
 
-      - name: Ensure Whisper sidecar
+      - name: Install Vulkan SDK
         shell: pwsh
         run: |
-          $sidecar = 'src-tauri\binaries\whisper-worker-x86_64-pc-windows-msvc.exe'
-          if (Test-Path $sidecar) {
-            Write-Host "Using checked-in Whisper sidecar: $sidecar"
-          } else {
-            ./scripts/build-whisper-worker.ps1
+          winget install --id KhronosGroup.VulkanSDK -e --accept-source-agreements --accept-package-agreements
+          $sdkRoot = 'C:\VulkanSDK'
+          if (-not (Test-Path $sdkRoot)) {
+            throw "Vulkan SDK install path not found: $sdkRoot"
+          }
+          $latest = Get-ChildItem -Path $sdkRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $latest) {
+            throw 'No Vulkan SDK version directory found after install.'
+          }
+          "VULKAN_SDK=$($latest.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "VULKAN_SDK=$($latest.FullName)"
+
+      - name: Ensure Whisper sidecars
+        shell: pwsh
+        run: |
+          $cudaSidecar = 'src-tauri\binaries\whisper-worker-x86_64-pc-windows-msvc.exe'
+          $vulkanSidecar = 'src-tauri\binaries\whisper-worker-vulkan-x86_64-pc-windows-msvc.exe'
+
+          if (Test-Path $cudaSidecar) {
+            Write-Host "Using checked-in CUDA Whisper sidecar: $cudaSidecar"
+          }
+
+          # Always rebuild via the script when possible. The script keeps an
+          # existing CUDA binary if CUDA toolkit is unavailable on the runner.
+          ./scripts/build-whisper-worker.ps1
+
+          if (-not (Test-Path $vulkanSidecar)) {
+            throw "Vulkan Whisper sidecar missing after build: $vulkanSidecar"
+          }
+          if (-not (Test-Path $cudaSidecar)) {
+            Write-Warning "CUDA Whisper sidecar missing; CUDA local mode will be unavailable in this build."
           }
 
       - name: Test

@@ -47,6 +47,7 @@ const themeToggle = document.getElementById('theme-toggle');
 
 // Local whisper elements
 const sectionLocalWhisper = document.getElementById('section-local-whisper');
+const accelerationSelect = document.getElementById('acceleration-select');
 const whisperStatusText = document.getElementById('whisper-status-text');
 const whisperDownloadBtn = document.getElementById('whisper-download-btn');
 const whisperLoadBtn = document.getElementById('whisper-load-btn');
@@ -54,12 +55,15 @@ const whisperProgressWrap = document.getElementById('whisper-progress-wrap');
 const whisperProgressFill = document.getElementById('whisper-progress-fill');
 const whisperProgressText = document.getElementById('whisper-progress-text');
 
-// CUDA runtime elements
+// CUDA / Vulkan runtime elements
+const sectionCudaRuntime = document.getElementById('section-cuda-runtime');
+const sectionVulkanRuntime = document.getElementById('section-vulkan-runtime');
 const cudaStatusText = document.getElementById('cuda-status-text');
 const cudaDownloadBtn = document.getElementById('cuda-download-btn');
 const cudaProgressWrap = document.getElementById('cuda-progress-wrap');
 const cudaProgressFill = document.getElementById('cuda-progress-fill');
 const cudaProgressText = document.getElementById('cuda-progress-text');
+const vulkanStatusText = document.getElementById('vulkan-status-text');
 
 // GEC (grammar correction) elements
 const grammarToggle = document.getElementById('grammar-toggle');
@@ -158,6 +162,8 @@ async function loadSavedSettings() {
   if (savedDevice) {
     micSelect.value = savedDevice;
   }
+
+  await restoreAccelerationPreference();
 
   const savedMode = await store.get('transcriptionMode');
   if (savedMode) {
@@ -340,7 +346,8 @@ async function toggleApiKeyVisibility(mode) {
     whisperDownloadBtn.style.display = 'none';
     whisperLoadBtn.style.display = 'none';
 
-    checkCudaRuntimeStatus();
+    await restoreAccelerationPreference();
+    updateAccelerationUi();
     // Auto-load if downloaded, otherwise just show status
     await autoLoadWhisperIfReady();
     // Refresh status after load attempt
@@ -353,6 +360,58 @@ async function toggleApiKeyVisibility(mode) {
         console.log('[Whisper] Model unloaded (switched away from local mode)');
       }).catch(err => console.warn('[Whisper] Unload failed:', err));
     }
+  }
+}
+
+function getSelectedAcceleration() {
+  const value = accelerationSelect?.value || 'cuda';
+  return value === 'vulkan' ? 'vulkan' : 'cuda';
+}
+
+async function restoreAccelerationPreference() {
+  if (!accelerationSelect || !store) return;
+  const saved = await store.get('localAcceleration');
+  if (saved === 'vulkan' || saved === 'cuda') {
+    accelerationSelect.value = saved;
+  }
+}
+
+function updateAccelerationUi() {
+  const acceleration = getSelectedAcceleration();
+  if (sectionCudaRuntime) {
+    sectionCudaRuntime.style.display = acceleration === 'cuda' ? '' : 'none';
+  }
+  if (sectionVulkanRuntime) {
+    sectionVulkanRuntime.style.display = acceleration === 'vulkan' ? '' : 'none';
+  }
+  if (acceleration === 'cuda') {
+    checkCudaRuntimeStatus();
+  } else if (vulkanStatusText) {
+    vulkanStatusText.textContent = 'Uses system GPU drivers (Vulkan 1.2+)';
+    vulkanStatusText.classList.add('ready');
+  }
+}
+
+async function onAccelerationChange() {
+  const acceleration = getSelectedAcceleration();
+  if (store) {
+    await store.set('localAcceleration', acceleration);
+  }
+  updateAccelerationUi();
+
+  // Backend switch requires a different sidecar process.
+  if (whisperModelLoaded) {
+    try {
+      await invoke('unload_whisper_model');
+    } catch (err) {
+      console.warn('[Whisper] Unload before backend switch failed:', err);
+    }
+    whisperModelLoaded = false;
+  }
+
+  if (modeSelect.value === 'local') {
+    await autoLoadWhisperIfReady();
+    await checkWhisperModelStatus();
   }
 }
 
@@ -1247,14 +1306,16 @@ let whisperModelLoaded = false;
 async function checkWhisperModelStatus() {
   try {
     const downloaded = await invoke('check_whisper_model');
+    const acceleration = getSelectedAcceleration();
+    const backendLabel = acceleration === 'vulkan' ? 'Vulkan' : 'CUDA';
     if (downloaded) {
       if (whisperModelLoaded) {
-        whisperStatusText.textContent = 'Model ready';
+        whisperStatusText.textContent = `Model ready (${backendLabel})`;
         whisperStatusText.classList.add('ready');
         whisperDownloadBtn.style.display = 'none';
         whisperLoadBtn.style.display = 'none';
       } else {
-        whisperStatusText.textContent = 'Model downloaded \u2014 needs loading';
+        whisperStatusText.textContent = `Model downloaded \u2014 load with ${backendLabel}`;
         whisperStatusText.classList.remove('ready');
         whisperDownloadBtn.style.display = 'none';
         whisperLoadBtn.style.display = '';
@@ -1306,18 +1367,21 @@ async function downloadWhisperModel() {
 
 async function loadWhisperModel() {
   whisperLoadBtn.style.display = 'none';
-  whisperStatusText.innerHTML = '<span class="spinner-inline"></span> Loading model into memory…';
+  const acceleration = getSelectedAcceleration();
+  const backendLabel = acceleration === 'vulkan' ? 'Vulkan' : 'CUDA';
+  whisperStatusText.innerHTML =
+    `<span class="spinner-inline"></span> Loading model (${backendLabel})\u2026`;
   whisperStatusText.classList.remove('ready');
 
   try {
-    await invoke('load_whisper_model');
+    await invoke('load_whisper_model', { acceleration });
     whisperModelLoaded = true;
-    whisperStatusText.textContent = 'Model ready';
+    whisperStatusText.textContent = `Model ready (${backendLabel})`;
     whisperStatusText.classList.add('ready');
-    setStatus('Whisper ready', false);
+    setStatus(`Whisper ready (${backendLabel})`, false);
   } catch (err) {
     console.error('Load failed:', err);
-    whisperStatusText.textContent = '\u2717 Load failed';
+    whisperStatusText.textContent = '\u2717 Load failed: ' + err;
     whisperLoadBtn.style.display = '';
   }
 }
@@ -1389,11 +1453,16 @@ async function downloadCudaRuntime() {
   }
 }
 
-// Wire up model and CUDA buttons
+// Wire up model, acceleration, and CUDA buttons
 document.addEventListener('DOMContentLoaded', () => {
   whisperDownloadBtn.addEventListener('click', downloadWhisperModel);
   whisperLoadBtn.addEventListener('click', loadWhisperModel);
   cudaDownloadBtn.addEventListener('click', downloadCudaRuntime);
+  if (accelerationSelect) {
+    accelerationSelect.addEventListener('change', () => {
+      void onAccelerationChange();
+    });
+  }
 });
 
 // ── WAV Recording (for Local Whisper) ──────────────────

@@ -1,8 +1,11 @@
 //! Whisper Worker — separate process for local whisper.cpp inference.
 //!
 //! Reads JSON commands from stdin, writes JSON responses to stdout.
-//! This runs in its own process so CUDA DLLs (~573 MB) are only loaded
+//! This runs in its own process so GPU runtime memory is only loaded
 //! here and fully freed when the process exits.
+//!
+//! Built as separate CUDA and Vulkan binaries (mutually exclusive
+//! whisper-rs features) so users can pick an acceleration path at runtime.
 //!
 //! Protocol:
 //!   → {"cmd":"load","data_dir":"C:\\..."}
@@ -13,6 +16,9 @@
 //!
 //!   → {"cmd":"transcribe_segments","audio_b64":"...","prompt":"optional"}
 //!   ← {"ok":true,"segments":[{"start":0.0,"end":2.5,"text":"...","no_speech_prob":0.1,"avg_logprob":-0.5}]}
+//!
+//!   → {"cmd":"backend"}
+//!   ← {"ok":true,"backend":"cuda"|"vulkan"|"cpu"}
 //!
 //!   → {"cmd":"quit"}
 //!   (process exits)
@@ -25,10 +31,22 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 
 static CTX: Mutex<Option<WhisperContext>> = Mutex::new(None);
 
+fn backend_name() -> &'static str {
+    if cfg!(feature = "cuda") {
+        "cuda"
+    } else if cfg!(feature = "vulkan") {
+        "vulkan"
+    } else {
+        "cpu"
+    }
+}
+
 fn main() {
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();
+
+    eprintln!("[whisper-worker] backend={}", backend_name());
 
     for line in stdin.lock().lines() {
         let line = match line {
@@ -92,6 +110,13 @@ fn main() {
                     }
                 }
             }
+            "backend" => {
+                let _ = writeln!(
+                    out,
+                    r#"{{"ok":true,"backend":"{}"}}"#,
+                    backend_name()
+                );
+            }
             "quit" => {
                 let _ = writeln!(out, r#"{{"ok":true}}"#);
                 let _ = out.flush();
@@ -119,7 +144,11 @@ fn load_model(data_dir: &str) -> Result<(), String> {
         return Err(format!("Model not found: {}", path.display()));
     }
 
-    eprintln!("[whisper-worker] Loading model from {:?}", path);
+    eprintln!(
+        "[whisper-worker] Loading model from {:?} (backend={})",
+        path,
+        backend_name()
+    );
     let start = std::time::Instant::now();
 
     let ctx = WhisperContext::new_with_params(
@@ -128,7 +157,11 @@ fn load_model(data_dir: &str) -> Result<(), String> {
     )
     .map_err(|e| format!("Failed to load: {e}"))?;
 
-    eprintln!("[whisper-worker] Model loaded in {:.1}s", start.elapsed().as_secs_f64());
+    eprintln!(
+        "[whisper-worker] Model loaded in {:.1}s (backend={})",
+        start.elapsed().as_secs_f64(),
+        backend_name()
+    );
 
     *guard = Some(ctx);
     Ok(())
