@@ -19,6 +19,9 @@ const MODEL_URL: &str =
     "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/ggml-large-v3-turbo-q5_0.bin";
 const MODEL_FILENAME: &str = "ggml-large-v3-turbo-q5_0.bin";
 const MODEL_SHA256: &str = "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2";
+/// Exact byte size of the published model (used for a fast presence check).
+const MODEL_SIZE_BYTES: u64 = 574_041_195;
+const MODEL_VERIFIED_MARKER: &str = "ggml-large-v3-turbo-q5_0.bin.verified";
 
 // ── Acceleration backend ───────────────────────────────
 
@@ -78,9 +81,43 @@ pub fn model_path(data_dir: &std::path::Path) -> PathBuf {
     data_dir.join(MODEL_FILENAME)
 }
 
-/// Check whether the model file already exists on disk.
+fn model_verified_marker(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join(MODEL_VERIFIED_MARKER)
+}
+
+fn write_model_verified_marker(data_dir: &std::path::Path) {
+    if let Err(err) = std::fs::write(model_verified_marker(data_dir), MODEL_SHA256) {
+        log::warn!("[WhisperLocal] Failed to write model verified marker: {err}");
+    }
+}
+
+/// Check whether the model file is present and previously verified.
+///
+/// Avoids re-hashing the ~574 MB weights on every settings/status check (that
+/// full SHA-256 scan was a major startup freeze, especially next to Vulkan init).
+/// Integrity is enforced at download time; day-to-day checks only use size + marker.
 pub fn is_model_downloaded(data_dir: &std::path::Path) -> bool {
-    crate::download::verify_file_sha256(&model_path(data_dir), MODEL_SHA256)
+    let path = model_path(data_dir);
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return false;
+    };
+    // Partial / wrong artifact — do not scan hundreds of MB on the UI path.
+    if meta.len() != MODEL_SIZE_BYTES {
+        return false;
+    }
+
+    let marker = model_verified_marker(data_dir);
+    if std::fs::read_to_string(&marker)
+        .map(|hash| hash.trim().eq_ignore_ascii_case(MODEL_SHA256))
+        .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Migration path for installs that predate the marker file: size matches the
+    // known good artifact, so trust it and write the marker without re-hashing.
+    write_model_verified_marker(data_dir);
+    true
 }
 
 /// Check if the worker is currently running and model loaded.
@@ -114,6 +151,7 @@ pub async fn download_model(
     )
     .await?;
 
+    write_model_verified_marker(data_dir);
     log::info!("[WhisperLocal] Download complete: {} bytes", downloaded);
     Ok(dest)
 }
@@ -227,8 +265,10 @@ pub async fn ensure_loaded(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit()); // worker logs go to our stderr
 
+    // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS — keep the heavy Vulkan/CUDA
+    // model load from starving the UI / WebView2 compositor during startup.
     #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    cmd.creation_flags(0x0800_0000 | 0x0000_4000);
 
     let mut child = cmd.spawn().map_err(|e| {
         format!(
@@ -675,7 +715,10 @@ async fn download_and_extract_dll_package(
 
 #[cfg(test)]
 mod tests {
-    use super::AccelerationBackend;
+    use super::{
+        is_model_downloaded, model_path, model_verified_marker, AccelerationBackend,
+        MODEL_SIZE_BYTES,
+    };
 
     #[test]
     fn parses_acceleration_backend() {
@@ -711,5 +754,37 @@ mod tests {
             AccelerationBackend::Vulkan.worker_bin_stem(),
             "whisper-worker-vulkan"
         );
+    }
+
+    #[test]
+    fn model_presence_uses_size_and_marker_not_full_hash() {
+        let dir = std::env::temp_dir().join(format!(
+            "annotate-whisper-presence-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(!is_model_downloaded(&dir));
+
+        // Wrong size → not present (tiny file, cheap hash miss).
+        std::fs::write(model_path(&dir), b"too-small").unwrap();
+        assert!(!is_model_downloaded(&dir));
+
+        // Exact size without marker → accepted and marker written (migration).
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(model_path(&dir)).unwrap();
+            file.set_len(MODEL_SIZE_BYTES).unwrap();
+            file.flush().unwrap();
+        }
+        assert!(is_model_downloaded(&dir));
+        assert!(model_verified_marker(&dir).exists());
+
+        // Correct size is enough; a stale marker is rewritten.
+        std::fs::write(model_verified_marker(&dir), "deadbeef").unwrap();
+        assert!(is_model_downloaded(&dir));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

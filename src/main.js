@@ -108,6 +108,10 @@ async function bootstrapDeferredStartup() {
     initGrammarUI(),
     initSubtitlingUI(),
   ]);
+
+  // Warm the local Whisper worker only after the UI is interactive. Vulkan device
+  // init + model load is GPU-heavy and used to freeze startup when awaited here.
+  scheduleWhisperWarmup(1800);
 }
 
 function afterFirstPaint() {
@@ -341,22 +345,23 @@ async function toggleApiKeyVisibility(mode) {
   await loadProviderSettings(mode);
 
   if (mode === 'local') {
-    // Show spinner immediately while we check / load
+    // Status only — never block settings/mode UI on model load.
     whisperStatusText.innerHTML = '<span class="spinner-inline"></span> Checking model\u2026';
     whisperDownloadBtn.style.display = 'none';
     whisperLoadBtn.style.display = 'none';
 
     await restoreAccelerationPreference();
     updateAccelerationUi();
-    // Auto-load if downloaded, otherwise just show status
-    await autoLoadWhisperIfReady();
-    // Refresh status after load attempt
     await checkWhisperModelStatus();
+    // Background warm-up keeps first PTT snappy without freezing the UI.
+    scheduleWhisperWarmup(400);
   } else {
+    cancelWhisperWarmup();
     // Unload whisper model when switching away from local mode
-    if (whisperModelLoaded) {
+    if (whisperModelLoaded || whisperLoadPromise) {
       invoke('unload_whisper_model').then(() => {
         whisperModelLoaded = false;
+        whisperLoadPromise = null;
         console.log('[Whisper] Model unloaded (switched away from local mode)');
       }).catch(err => console.warn('[Whisper] Unload failed:', err));
     }
@@ -400,18 +405,21 @@ async function onAccelerationChange() {
   updateAccelerationUi();
 
   // Backend switch requires a different sidecar process.
-  if (whisperModelLoaded) {
+  cancelWhisperWarmup();
+  if (whisperModelLoaded || whisperLoadPromise) {
     try {
       await invoke('unload_whisper_model');
     } catch (err) {
       console.warn('[Whisper] Unload before backend switch failed:', err);
     }
     whisperModelLoaded = false;
+    whisperLoadPromise = null;
   }
 
   if (modeSelect.value === 'local') {
-    await autoLoadWhisperIfReady();
     await checkWhisperModelStatus();
+    // Defer so the select interaction stays responsive while Vulkan/CUDA starts.
+    scheduleWhisperWarmup(500);
   }
 }
 
@@ -446,18 +454,44 @@ async function maybeLoadOpenRouterKey() {
 }
 
 /**
- * Auto-load the whisper model on startup if it's downloaded but not loaded.
+ * Auto-load the whisper model if downloaded. Safe to call repeatedly; concurrent
+ * callers share one in-flight promise.
  */
-async function autoLoadWhisperIfReady() {
-  if (whisperModelLoaded) return;
+async function autoLoadWhisperIfReady({ interactive = false } = {}) {
+  if (whisperModelLoaded) return true;
   try {
     const downloaded = await invoke('check_whisper_model');
-    if (downloaded) {
-      await loadWhisperModel();
-    }
+    if (!downloaded) return false;
+    await loadWhisperModel({ interactive });
+    return whisperModelLoaded;
   } catch (err) {
     console.warn('[AutoLoad] Could not auto-load whisper model:', err);
+    return false;
   }
+}
+
+let whisperWarmupTimer = null;
+
+function cancelWhisperWarmup() {
+  if (whisperWarmupTimer != null) {
+    clearTimeout(whisperWarmupTimer);
+    whisperWarmupTimer = null;
+  }
+}
+
+/**
+ * Schedule a background model warm-up after the UI has settled.
+ * Vulkan device init is especially costly; delaying it avoids startup freezes.
+ */
+function scheduleWhisperWarmup(delayMs = 1500) {
+  cancelWhisperWarmup();
+  if (modeSelect.value !== 'local') return;
+
+  whisperWarmupTimer = setTimeout(() => {
+    whisperWarmupTimer = null;
+    if (modeSelect.value !== 'local' || whisperModelLoaded || whisperLoadPromise) return;
+    void autoLoadWhisperIfReady({ interactive: false });
+  }, delayMs);
 }
 
 // ── Hotkey Recording ───────────────────────────────────
@@ -600,6 +634,11 @@ async function setupHotkeyListener() {
 
     if (mode === 'azure-mai') {
       warmAzureRestConnection();
+    }
+
+    // Kick off model load while the user is speaking if warm-up hasn't finished.
+    if (mode === 'local' && !whisperModelLoaded) {
+      void autoLoadWhisperIfReady({ interactive: false });
     }
 
     if (mode === 'webspeech') {
@@ -1302,6 +1341,8 @@ async function setTheme(theme) {
 
 // ── Local Whisper Model Management ─────────────────────
 let whisperModelLoaded = false;
+/** @type {Promise<boolean> | null} */
+let whisperLoadPromise = null;
 
 async function checkWhisperModelStatus() {
   try {
@@ -1314,10 +1355,17 @@ async function checkWhisperModelStatus() {
         whisperStatusText.classList.add('ready');
         whisperDownloadBtn.style.display = 'none';
         whisperLoadBtn.style.display = 'none';
-      } else {
-        whisperStatusText.textContent = `Model downloaded \u2014 load with ${backendLabel}`;
+      } else if (whisperLoadPromise) {
+        whisperStatusText.innerHTML =
+          `<span class="spinner-inline"></span> Loading model (${backendLabel})\u2026`;
         whisperStatusText.classList.remove('ready');
         whisperDownloadBtn.style.display = 'none';
+        whisperLoadBtn.style.display = 'none';
+      } else {
+        whisperStatusText.textContent = `Model downloaded \u2014 warming ${backendLabel}\u2026`;
+        whisperStatusText.classList.remove('ready');
+        whisperDownloadBtn.style.display = 'none';
+        // Keep manual load available if background warm-up hasn't started yet.
         whisperLoadBtn.style.display = '';
       }
     } else {
@@ -1365,25 +1413,49 @@ async function downloadWhisperModel() {
   }
 }
 
-async function loadWhisperModel() {
-  whisperLoadBtn.style.display = 'none';
+/**
+ * Load the local whisper sidecar/model. Concurrent callers share one promise.
+ * @param {{ interactive?: boolean }} [opts]
+ */
+async function loadWhisperModel({ interactive = true } = {}) {
+  if (whisperModelLoaded) return true;
+  if (whisperLoadPromise) return whisperLoadPromise;
+
   const acceleration = getSelectedAcceleration();
   const backendLabel = acceleration === 'vulkan' ? 'Vulkan' : 'CUDA';
-  whisperStatusText.innerHTML =
-    `<span class="spinner-inline"></span> Loading model (${backendLabel})\u2026`;
-  whisperStatusText.classList.remove('ready');
 
-  try {
-    await invoke('load_whisper_model', { acceleration });
-    whisperModelLoaded = true;
-    whisperStatusText.textContent = `Model ready (${backendLabel})`;
-    whisperStatusText.classList.add('ready');
-    setStatus(`Whisper ready (${backendLabel})`, false);
-  } catch (err) {
-    console.error('Load failed:', err);
-    whisperStatusText.textContent = '\u2717 Load failed: ' + err;
-    whisperLoadBtn.style.display = '';
-  }
+  whisperLoadPromise = (async () => {
+    whisperLoadBtn.style.display = 'none';
+    whisperStatusText.innerHTML =
+      `<span class="spinner-inline"></span> Loading model (${backendLabel})\u2026`;
+    whisperStatusText.classList.remove('ready');
+    if (interactive) {
+      setStatus(`Loading Whisper (${backendLabel})\u2026`, false, true);
+    }
+
+    try {
+      await invoke('load_whisper_model', { acceleration });
+      whisperModelLoaded = true;
+      whisperStatusText.textContent = `Model ready (${backendLabel})`;
+      whisperStatusText.classList.add('ready');
+      if (interactive || modeSelect.value === 'local') {
+        setStatus(`Whisper ready (${backendLabel})`, false);
+      }
+      return true;
+    } catch (err) {
+      console.error('Load failed:', err);
+      whisperStatusText.textContent = '\u2717 Load failed: ' + err;
+      whisperLoadBtn.style.display = '';
+      if (interactive) {
+        setStatus('Whisper load failed', true);
+      }
+      return false;
+    } finally {
+      whisperLoadPromise = null;
+    }
+  })();
+
+  return whisperLoadPromise;
 }
 
 // ── CUDA Runtime Management ────────────────────────────
@@ -1456,7 +1528,9 @@ async function downloadCudaRuntime() {
 // Wire up model, acceleration, and CUDA buttons
 document.addEventListener('DOMContentLoaded', () => {
   whisperDownloadBtn.addEventListener('click', downloadWhisperModel);
-  whisperLoadBtn.addEventListener('click', loadWhisperModel);
+  whisperLoadBtn.addEventListener('click', () => {
+    void loadWhisperModel({ interactive: true });
+  });
   cudaDownloadBtn.addEventListener('click', downloadCudaRuntime);
   if (accelerationSelect) {
     accelerationSelect.addEventListener('change', () => {
@@ -1612,6 +1686,12 @@ async function stopWavRecording() {
       }
       logTranscriptionTiming('azure-mai', 'REST transcription', invokeTimer);
     } else {
+      // Ensure the sidecar is up (deferred warm-up may still be in flight).
+      const ready = await autoLoadWhisperIfReady({ interactive: true });
+      if (!ready) {
+        setStatus('Whisper not ready', true);
+        return;
+      }
       const invokeTimer = performance.now();
       text = await invoke('transcribe_audio_local', {
         audioBase64: base64,
