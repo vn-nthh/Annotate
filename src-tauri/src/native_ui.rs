@@ -324,7 +324,7 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
                 &directory.join(format!("{}.png", key.replace(':', "-"))),
                 window.renderer.width,
                 window.renderer.height,
-                &window.capture_pixels()?,
+                &window.capture_pixels(WM_PRINT)?,
             )?;
             controls.insert(
                 key.clone(),
@@ -341,7 +341,7 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
                     &directory.join(format!("{}-settings-bottom.png", window.theme())),
                     window.renderer.width,
                     window.renderer.height,
-                    &window.capture_pixels()?,
+                    &window.capture_pixels(WM_PRINT)?,
                 )?;
             }
         }
@@ -397,7 +397,7 @@ impl Window {
         let width = (520.0 * dpi).round() as i32;
         let height = (580.0 * dpi).round() as i32;
         let hwnd = CreateWindowExW(
-            WS_EX_APPWINDOW,
+            WS_EX_APPWINDOW | WS_EX_COMPOSITED,
             w!("AnnotateNativeSettings"),
             w!("Annotate"),
             WS_POPUP | WS_MINIMIZEBOX | WS_CLIPCHILDREN,
@@ -558,6 +558,56 @@ impl Window {
             return Err("Acceleration options mismatch".into());
         }
         checks.push("Only Groq, Azure MAI, and local Vulkan are selectable");
+        for theme in ["light", "dark"] {
+            self.state
+                .settings
+                .insert("theme".into(), serde_json::json!(theme));
+            self.memory.scroll.clear();
+            self.update(true);
+            for delta in [-120i16, 120] {
+                for _ in 0..20 {
+                    SendMessageW(
+                        self.hwnd,
+                        WM_MOUSEWHEEL,
+                        Some(WPARAM((delta as u16 as usize) << 16)),
+                        None,
+                    );
+                    if IsWindowVisible(self.hwnd).as_bool() {
+                        return Err("Updating hidden UI unexpectedly showed its window".into());
+                    }
+                    let erased = self.capture_pixels(WM_ERASEBKGND)?;
+                    if erased
+                        .chunks_exact(4)
+                        .zip(self.pixels.chunks_exact(4))
+                        .any(|(actual, expected)| actual[..3] != expected[..3])
+                    {
+                        return Err(format!("Native controls erase to an unthemed background while scrolling ({theme})"));
+                    }
+                }
+            }
+        }
+        checks.push("Control background erasure matches the full themed frame throughout scrolling in both themes");
+        let home = self
+            .controls
+            .iter()
+            .find(|c| c.id == "tab:home")
+            .unwrap()
+            .hwnd;
+        let dictionary = self
+            .controls
+            .iter()
+            .find(|c| c.id == "tab:dictionary")
+            .unwrap()
+            .hwnd;
+        SendMessageW(home, WM_MOUSEMOVE, None, None);
+        SendMessageW(dictionary, WM_MOUSEMOVE, None, None);
+        let hovered_frame = self.capture_pixels(WM_PRINT)?;
+        SendMessageW(home, WM_MOUSELEAVE, None, None);
+        if self.hover != "tab:dictionary" || self.capture_pixels(WM_PRINT)? != hovered_frame {
+            return Err("A previous menu item cleared the current item's hover highlight".into());
+        }
+        checks.push("Leaving a previous menu item preserves the current item's hover highlight");
+        self.hover.clear();
         self.state.user = Some(serde_json::json!({"name":"Example User","picture":"fixture"}));
         for bytes in [
             include_bytes!("../assets/profile-avatar-fixture.png").as_slice(),
@@ -790,6 +840,42 @@ impl Window {
             .hwnd;
         let _ = SetWindowTextW(endpoint, w!("https://native-parity.invalid/endpoint"));
         self.update(true);
+        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        let endpoint = self
+            .controls
+            .iter()
+            .find(|c| c.id == "azure-endpoint-input")
+            .unwrap()
+            .hwnd;
+        let _ = SetFocus(Some(endpoint));
+        SendMessageW(endpoint, EM_SETSEL, Some(WPARAM(8)), Some(LPARAM(14)));
+        for delta in [-120i16, 120] {
+            SendMessageW(
+                self.hwnd,
+                WM_MOUSEWHEEL,
+                Some(WPARAM((delta as u16 as usize) << 16)),
+                None,
+            );
+            let endpoint = self
+                .controls
+                .iter()
+                .find(|c| c.id == "azure-endpoint-input")
+                .unwrap()
+                .hwnd;
+            if !IsWindowVisible(self.hwnd).as_bool()
+                || GetFocus() != endpoint
+                || SendMessageW(endpoint, EM_GETSEL, None, None).0 != (8 | (14 << 16))
+                || read_text(endpoint) != "https://native-parity.invalid/endpoint"
+            {
+                return Err(
+                    "Scrolling lost the active edit, focus, selection, or window visibility".into(),
+                );
+            }
+        }
+        let _ = ShowWindow(self.hwnd, SW_HIDE);
+        checks.push(
+            "Visible scrolling preserves an active edit, focus, selection, and window visibility",
+        );
         SendMessageW(self.hwnd, WM_CLOSE, None, None);
         if get().snapshot().setting("azureMaiEndpoint", "")
             != "https://native-parity.invalid/endpoint"
@@ -2069,10 +2155,18 @@ impl Window {
             .iter()
             .map(|c| (c.id.clone(), c.rect, c.options.clone()))
             .collect();
-        if rebuild || signature != previous {
+        // Keep the old frame on screen while changing child HWNDs. Re-enabling
+        // redraw on an initially hidden window would show it, so guard it.
+        let visible = IsWindowVisible(self.hwnd).as_bool();
+        let controls_changed = rebuild || signature != previous;
+        let suspend_redraw = visible && controls_changed;
+        self.rebuilding = true;
+        if suspend_redraw {
+            SendMessageW(self.hwnd, WM_SETREDRAW, Some(WPARAM(0)), None);
+        }
+        if controls_changed {
             self.create_controls();
         }
-        self.rebuilding = true;
         for c in &self.controls {
             if let Some(n) = self.nodes.iter().find(|n| {
                 n.owner == c.id && (n.kind == "hit" || n.kind == "edit" || n.kind == "select")
@@ -2104,7 +2198,6 @@ impl Window {
                 }
             }
         }
-        self.rebuilding = false;
         if !self.state.busy.is_empty()
             || self.state.ready.contains("status-active")
             || self.copied.is_some()
@@ -2116,10 +2209,23 @@ impl Window {
         if let Err(e) = self.paint() {
             log::error!("Native paint: {e}");
         }
-        let _ = InvalidateRect(Some(self.hwnd), None, false);
-        for c in &self.controls {
-            let _ = InvalidateRect(Some(c.hwnd), None, false);
+        if suspend_redraw {
+            SendMessageW(self.hwnd, WM_SETREDRAW, Some(WPARAM(1)), None);
         }
+        let _ = RedrawWindow(
+            Some(self.hwnd),
+            None,
+            None,
+            RDW_INVALIDATE
+                | RDW_ALLCHILDREN
+                | RDW_NOERASE
+                | if suspend_redraw {
+                    RDW_UPDATENOW
+                } else {
+                    REDRAW_WINDOW_FLAGS(0)
+                },
+        );
+        self.rebuilding = false;
     }
     unsafe fn create_controls(&mut self) {
         self.rebuilding = true;
@@ -2172,8 +2278,8 @@ impl Window {
             }
             let is_edit = n.kind == "edit";
             let is_select = n.kind == "select";
+            // Configure and subclass controls before making them visible.
             let style = WS_CHILD
-                | WS_VISIBLE
                 | WS_TABSTOP
                 | WINDOW_STYLE(if is_edit {
                     ES_AUTOHSCROLL as u32
@@ -2296,7 +2402,7 @@ impl Window {
                         height
                     }),
                 );
-                let _ = SetWindowRgn(hwnd, Some(clip), true);
+                let _ = SetWindowRgn(hwnd, Some(clip), false);
             }
             let font = if is_edit || is_select {
                 let font = CreateFontW(
@@ -2319,7 +2425,7 @@ impl Window {
                     hwnd,
                     WM_SETFONT,
                     Some(WPARAM(font.0 as usize)),
-                    Some(LPARAM(1)),
+                    Some(LPARAM(0)),
                 );
                 if is_edit {
                     SendMessageW(
@@ -2397,7 +2503,9 @@ impl Window {
                 font,
             });
         }
-        self.rebuilding = false;
+        for c in &self.controls {
+            let _ = ShowWindow(c.hwnd, SW_SHOWNOACTIVATE);
+        }
         if let Some((id, selection)) = focus {
             if let Some(c) = self.controls.iter().find(|c| c.id == id) {
                 let _ = SetFocus(Some(c.hwnd));
@@ -2500,7 +2608,7 @@ impl Window {
         crate::native_benchmark::ready();
         Ok(())
     }
-    unsafe fn capture_pixels(&self) -> Result<Vec<u8>, String> {
+    unsafe fn capture_pixels(&self, message: u32) -> Result<Vec<u8>, String> {
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
@@ -2524,9 +2632,25 @@ impl Window {
             let saved = SaveDC(dc);
             let _ = SetViewportOrgEx(dc, c.inner[0], c.inner[1], None);
             IntersectClipRect(dc, 0, 0, c.inner[2], c.inner[3]);
+            if message == WM_ERASEBKGND {
+                // Make a missing/custom-control erasure visible to the scrolling
+                // regression check instead of inheriting the settled frame.
+                let sentinel = CreateSolidBrush(COLORREF(0x00ff00ff));
+                FillRect(
+                    dc,
+                    &RECT {
+                        left: 0,
+                        top: 0,
+                        right: c.inner[2],
+                        bottom: c.inner[3],
+                    },
+                    sentinel,
+                );
+                let _ = DeleteObject(sentinel.into());
+            }
             SendMessageW(
                 c.hwnd,
-                WM_PRINT,
+                message,
                 Some(WPARAM(dc.0 as usize)),
                 Some(LPARAM(
                     (PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND) as isize,
@@ -3106,6 +3230,20 @@ unsafe extern "system" fn control_proc(
     if !ptr.is_null() {
         let w = &mut *ptr;
         match msg {
+            WM_ERASEBKGND => {
+                if let Some(c) = w.controls.iter().find(|c| c.hwnd == hwnd) {
+                    // Stock controls may erase before WM_PAINT/WM_DRAWITEM.
+                    // Use the same frame here rather than their system brush.
+                    blit(
+                        HDC(wparam.0 as *mut _),
+                        &w.pixels,
+                        w.renderer.width,
+                        w.renderer.height,
+                        c.inner,
+                    );
+                    return LRESULT(1);
+                }
+            }
             WM_MOUSEMOVE => {
                 let mut p = POINT::default();
                 let _ = GetCursorPos(&mut p);
@@ -3130,8 +3268,10 @@ unsafe extern "system" fn control_proc(
                 }
             }
             WM_MOUSELEAVE => {
-                w.hover.clear();
-                w.update(false);
+                if w.controls.iter().any(|c| c.hwnd == hwnd && c.id == w.hover) {
+                    w.hover.clear();
+                    w.update(false);
+                }
             }
             WM_MOUSEWHEEL => {
                 if w.controls

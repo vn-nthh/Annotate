@@ -14,10 +14,13 @@ no browser runtime or frontend assets. Local Whisper uses the Vulkan worker.
   capture formatting and cancellation, shortcut parsing, OAuth/PKCE, sync races,
   legacy browser-data migration, subtitle timestamps, and worker cleanup.
 - The app-owned `--capture-ui <directory>` harness renders 56 screen states and
-  checks 16 interactions. It exercises the real Win32 controls and message
+  checks 19 interactions. It exercises the real Win32 controls and message
   handlers with a unique isolated profile. This includes keyboard input, edits
   saved before closing, tray reopening, download/retry states, long subtitles
   and summaries, prerequisites, PNG/JPEG profile photos, and 150% DPI scaling.
+  Scrolling checks background erasure in both themes and preserves a focused
+  edit's text and selection. Sidebar hover checks delayed sibling mouse-leave
+  events against the rendered highlight.
 - Light/dark layouts, fonts, icons, copy, and modal geometry are retained from
   the HTML/CSS reference. Browser transcription and CUDA options are removed.
   Native text antialiasing and focus indicators can differ slightly.
@@ -30,6 +33,13 @@ the native build with `annotate.exe --capture-ui <directory>`. The capture
 produces PNG screens, `controls.json`, and the passed checks in `checks.json`.
 No real credentials, microphone, clipboard, or cloud account are used by the
 capture harness.
+
+The scrolling/hover repaint checks failed before their fixes and pass afterward.
+Controls are configured while hidden; structural updates batch their redraw,
+and background erasure uses the same complete frame as painting. Ordinary hover
+updates retain window visibility and coalesce redraws. A mouse-leave event only
+clears the highlight belonging to its own control. All 58 captured screens
+remain pixel-identical to the native migration build before these repaint fixes.
 
 ## Offline transcription
 
@@ -46,7 +56,7 @@ Tested worker SHA-256:
 
 ## Performance and package
 
-The final executable's measurements are recorded in
+The native migration baseline's measurements are recorded in
 [`native-benchmark.json`](native-benchmark.json). Median working set was
 39.11 MiB with the native window open and 31.00 MiB in the tray, compared with
 364.90 and 364.63 MiB for Tauri: reductions of 89.28% and 91.50%. Startup from
@@ -62,14 +72,19 @@ Memory is sampled after settling and includes all owned processes. Working-set
 sums include shared pages; private bytes measure committed private memory.
 These measurements describe the idle UI/runtime, not inference with models
 loaded or cold-cache launches.
+The executable hash in the report identifies the build before the scrolling
+and sidebar-hover repaint fixes; these timings were not remeasured afterward.
 
 The extracted portable ZIP is checked by `scripts/test-native-package.ps1`.
 It runs the packaged UI capture and Vulkan worker independently of the checkout,
 and rejects browser assets, raw fonts, CUDA binaries, and missing runtime files.
-The final ZIP passed all 16 interactions and produced 58 PNGs, including the two
-settings scroll snapshots. Its app/worker hashes match the measured/tested
-executables. Archive SHA-256:
-`4AEC12FE68FEC632F264895147291039E329468E0297FE759CC93F05288311A0`.
+The repaint-fix executable passed all 19 interactions and produced 58 PNGs,
+including the two settings scroll snapshots. Its SHA-256 is:
+`B73E7F69F58D5E452A243FDB0091CAA75548F9DCCC4B1D34B5B6BA5C53C55A73`.
+The Vulkan worker is unchanged from the tested build above.
+The updated portable ZIP also passed all 19 checks in isolation and the worker
+reported Vulkan. Archive SHA-256:
+`84178C33E703E40662E5489BB7BB76132B45CA2341EA42D1504DCA02B864EC7A`.
 
 Live Groq/Azure/OpenRouter requests, Google sign-in/sync against a real account,
 and live microphone recording were not exercised. Their preserved backend
