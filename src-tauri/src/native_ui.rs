@@ -12,7 +12,7 @@ use std::{
 };
 use windows::Win32::{
     System::{SystemInformation::*, Time::*},
-    UI::Shell::{DefSubclassProc, SetWindowSubclass},
+    UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
 };
 use windows::{
     core::{w, Interface, HSTRING},
@@ -587,6 +587,85 @@ impl Window {
             }
         }
         checks.push("Control background erasure matches the full themed frame throughout scrolling in both themes");
+        self.check_wheel_routing()?;
+        checks.push("Scrolling keeps its input target visible throughout control rebuilding, including fractional deltas over controls");
+        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        for id in ["titlebar-close", "titlebar-minimize"] {
+            let c = self
+                .controls
+                .iter()
+                .find(|c| c.id == id)
+                .ok_or_else(|| format!("Missing native titlebar button: {id}"))?;
+            let hwnd = c.hwnd;
+            let center = LPARAM((c.inner[2] / 2) as isize | (((c.inner[3] / 2) as isize) << 16));
+            let mut point = POINT {
+                x: c.inner[0] + c.inner[2] / 2,
+                y: c.inner[1] + c.inner[3] / 2,
+            };
+            SendMessageW(hwnd, WM_MOUSEMOVE, None, Some(center));
+            if !self.controls.iter().any(|c| c.id == id && c.hwnd == hwnd)
+                || !IsWindowVisible(hwnd).as_bool()
+                || !IsWindowEnabled(hwnd).as_bool()
+            {
+                return Err(format!(
+                    "Titlebar hover replaced or disabled its button: {id}"
+                ));
+            }
+            if ChildWindowFromPointEx(self.hwnd, point, CWP_SKIPINVISIBLE | CWP_SKIPDISABLED)
+                != hwnd
+            {
+                return Err(format!(
+                    "Titlebar hit testing missed its native button: {id}"
+                ));
+            }
+            let _ = ClientToScreen(self.hwnd, &mut point);
+            if SendMessageW(
+                self.hwnd,
+                WM_NCHITTEST,
+                None,
+                Some(LPARAM(
+                    point.x as u16 as isize | ((point.y as u16 as isize) << 16),
+                )),
+            )
+            .0 != HTCLIENT as isize
+            {
+                return Err(format!(
+                    "Caption dragging intercepted a titlebar button: {id}"
+                ));
+            }
+            // Exercise the stock BUTTON and BN_CLICKED path, rather than click().
+            SendMessageW(
+                hwnd,
+                WM_LBUTTONDOWN,
+                Some(WPARAM(1)), // MK_LBUTTON
+                Some(center),
+            );
+            SendMessageW(hwnd, WM_LBUTTONUP, None, Some(center));
+            if id == "titlebar-close" {
+                if !self.modal || !self.controls.iter().any(|c| c.id == "modal-tray") {
+                    return Err("Native X button did not open the close dialog".into());
+                }
+                let cancel = self
+                    .controls
+                    .iter()
+                    .find(|c| c.id == "modal-cancel")
+                    .unwrap()
+                    .hwnd;
+                SendMessageW(cancel, BM_CLICK, None, None);
+                if self.modal {
+                    return Err("Native Cancel button did not close the dialog".into());
+                }
+            } else {
+                if !IsIconic(self.hwnd).as_bool() {
+                    return Err("Native minimize button did not minimize its window".into());
+                }
+                let _ = ShowWindow(self.hwnd, SW_RESTORE);
+            }
+        }
+        let _ = ShowWindow(self.hwnd, SW_HIDE);
+        self.hover.clear();
+        self.update(false);
+        checks.push("Native titlebar buttons survive hover; X opens the close dialog and minimize minimizes the window");
         let home = self
             .controls
             .iter()
@@ -891,6 +970,28 @@ impl Window {
             return Err("Active endpoint did not reach the settings file".into());
         }
         checks.push("Alt+F4/close commits an active settings edit before the tray modal");
+        let scroll = self.scroll();
+        for child in [false, true] {
+            let target = if child {
+                self.controls
+                    .iter()
+                    .find(|c| c.id == "modal-cancel")
+                    .unwrap()
+                    .hwnd
+            } else {
+                self.hwnd
+            };
+            SendMessageW(
+                target,
+                WM_MOUSEWHEEL,
+                Some(WPARAM((-120i16 as u16 as usize) << 16)),
+                None,
+            );
+            if !self.modal || self.scroll() != scroll {
+                return Err("Wheel input scrolled the page behind the close dialog".into());
+            }
+        }
+        checks.push("The close dialog consumes wheel input without scrolling the page behind it");
         self.click("modal-cancel");
         if self.modal {
             return Err("Modal Cancel failed".into());
@@ -2131,6 +2232,82 @@ impl Window {
             "center",
         ));
     }
+    unsafe fn check_wheel_routing(&mut self) -> Result<(), String> {
+        #[derive(Default)]
+        struct Probe {
+            samples: usize,
+            hidden: usize,
+        }
+        unsafe extern "system" fn probe_proc(
+            hwnd: HWND,
+            msg: u32,
+            wparam: WPARAM,
+            lparam: LPARAM,
+            _id: usize,
+            data: usize,
+        ) -> LRESULT {
+            let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+            if msg == WM_PARENTNOTIFY || msg == WM_SETREDRAW {
+                let probe = &mut *(data as *mut Probe);
+                probe.samples += 1;
+                probe.hidden += usize::from(!IsWindowVisible(hwnd).as_bool());
+            }
+            result
+        }
+        self.memory.scroll.clear();
+        self.update(true);
+        let _ = ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
+        let mut probe = Probe::default();
+        // Sample during child creation/destruction: checking after WM_MOUSEWHEEL
+        // returns misses a temporarily hidden input target.
+        let result = (|| {
+            if !SetWindowSubclass(
+                self.hwnd,
+                Some(probe_proc),
+                2,
+                (&mut probe as *mut Probe) as usize,
+            )
+            .as_bool()
+            {
+                return Err("Cannot attach scroll visibility check".into());
+            }
+            for child in [false, true] {
+                for delta in [-30i16, -90, 120] {
+                    let target = if child {
+                        self.controls
+                            .iter()
+                            .find(|c| c.id == "tab:home")
+                            .unwrap()
+                            .hwnd
+                    } else {
+                        self.hwnd
+                    };
+                    let expected = self.scroll() - delta as f32 / 120.0 * 48.0;
+                    SendMessageW(
+                        target,
+                        WM_MOUSEWHEEL,
+                        Some(WPARAM((delta as u16 as usize) << 16)),
+                        None,
+                    );
+                    if self.scroll() != expected {
+                        return Err(
+                            "Parent or child wheel input lost a fractional scroll delta".into()
+                        );
+                    }
+                }
+            }
+            if probe.samples == 0 || probe.hidden != 0 {
+                return Err(format!(
+                    "Scrolling hid its input target in {} of {} rebuild samples",
+                    probe.hidden, probe.samples
+                ));
+            }
+            Ok(())
+        })();
+        let _ = RemoveWindowSubclass(self.hwnd, Some(probe_proc), 2);
+        let _ = ShowWindow(self.hwnd, SW_HIDE);
+        result
+    }
     unsafe fn update(&mut self, rebuild: bool) {
         if let Err(error) = self.renderer.set_avatar(self.state.avatar.as_ref()) {
             log::warn!("Cannot decode Google profile photo: {error}");
@@ -2142,7 +2319,9 @@ impl Window {
             .filter(|n| {
                 (n.kind == "hit" || n.kind == "edit" || n.kind == "select")
                     && (!self.modal || n.owner.starts_with("modal-"))
-                    && !(n.rect[1] + n.rect[3] < 48.0 && n.rect[0] >= 68.0
+                    && !(n.rect[1] + n.rect[3] < 48.0
+                        && n.rect[0] >= 68.0
+                        && !n.owner.starts_with("titlebar-")
                         || n.rect[1] >= 580.0
                         || n.clip[2] > 0.0
                             && (n.rect[1] + n.rect[3] <= n.clip[1]
@@ -2155,15 +2334,11 @@ impl Window {
             .iter()
             .map(|c| (c.id.clone(), c.rect, c.options.clone()))
             .collect();
-        // Keep the old frame on screen while changing child HWNDs. Re-enabling
-        // redraw on an initially hidden window would show it, so guard it.
+        // Keep the parent visible as an input target. WM_SETREDRAW(FALSE) would
+        // hide it from Windows while leaving its old pixels on screen.
         let visible = IsWindowVisible(self.hwnd).as_bool();
         let controls_changed = rebuild || signature != previous;
-        let suspend_redraw = visible && controls_changed;
         self.rebuilding = true;
-        if suspend_redraw {
-            SendMessageW(self.hwnd, WM_SETREDRAW, Some(WPARAM(0)), None);
-        }
         if controls_changed {
             self.create_controls();
         }
@@ -2209,8 +2384,11 @@ impl Window {
         if let Err(e) = self.paint() {
             log::error!("Native paint: {e}");
         }
-        if suspend_redraw {
-            SendMessageW(self.hwnd, WM_SETREDRAW, Some(WPARAM(1)), None);
+        if controls_changed {
+            // New controls erase and paint from this completed frame.
+            for c in &self.controls {
+                let _ = ShowWindow(c.hwnd, SW_SHOWNOACTIVATE);
+            }
         }
         let _ = RedrawWindow(
             Some(self.hwnd),
@@ -2219,7 +2397,7 @@ impl Window {
             RDW_INVALIDATE
                 | RDW_ALLCHILDREN
                 | RDW_NOERASE
-                | if suspend_redraw {
+                | if visible && controls_changed {
                     RDW_UPDATENOW
                 } else {
                     REDRAW_WINDOW_FLAGS(0)
@@ -2269,7 +2447,9 @@ impl Window {
             if self.modal && !n.owner.starts_with("modal-") {
                 continue;
             }
-            if n.rect[1] + n.rect[3] < 48.0 && n.rect[0] >= 68.0
+            if n.rect[1] + n.rect[3] < 48.0
+                && n.rect[0] >= 68.0
+                && !n.owner.starts_with("titlebar-")
                 || n.rect[1] >= 580.0
                 || n.clip[2] > 0.0
                     && (n.rect[1] + n.rect[3] <= n.clip[1] || n.rect[1] >= n.clip[1] + n.clip[3])
@@ -2502,9 +2682,6 @@ impl Window {
                 options: n.options,
                 font,
             });
-        }
-        for c in &self.controls {
-            let _ = ShowWindow(c.hwnd, SW_SHOWNOACTIVATE);
         }
         if let Some((id, selection)) = focus {
             if let Some(c) = self.controls.iter().find(|c| c.id == id) {
@@ -2929,6 +3106,9 @@ impl Window {
         }
     }
     unsafe fn wheel(&mut self, delta: f32) {
+        if self.modal {
+            return;
+        }
         if self.memory.tab == "subtitling" && !self.state.entries.is_empty() {
             if let Some(n) = self.nodes.iter().find(|n| {
                 n.classes.contains("mono preview") && inside(n.clip, self.mouse[0], self.mouse[1])
