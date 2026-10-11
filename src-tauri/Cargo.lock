@@ -111,6 +111,7 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "windows 0.61.3",
+ "windows-numerics",
  "windows-sys 0.61.2",
  "zip",
 ]

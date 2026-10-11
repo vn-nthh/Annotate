@@ -3,8 +3,7 @@
   "identifier": "default",
   "description": "Default capabilities for Annotate",
   "windows": [
-    "main",
-    "throbber"
+    "main"
   ],
   "permissions": [
     "core:default",

@@ -18,21 +18,6 @@
         "fullscreen": false,
         "decorations": false,
         "center": true
-      },
-      {
-        "label": "throbber",
-        "url": "throbber.html",
-        "width": 260,
-        "height": 32,
-        "resizable": false,
-        "fullscreen": false,
-        "decorations": false,
-        "shadow": false,
-        "transparent": true,
-        "alwaysOnTop": true,
-        "visible": false,
-        "skipTaskbar": true,
-        "center": true
       }
     ],
     "security": {

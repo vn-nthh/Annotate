@@ -8,6 +8,7 @@ mod gec;
 mod vad;
 mod summary;
 pub mod subtitle;
+mod throbber;
 
 use audio::{enumerate_capture_devices, apply_device_override};
 #[cfg(not(target_os = "windows"))]
@@ -978,41 +979,28 @@ fn unregister_dict_hotkey(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Show the throbber overlay window at bottom-center of the screen
+/// Show the native Windows Composition listening overlay.
 #[tauri::command]
-fn show_throbber(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("throbber") {
-        // Position at bottom-center of the primary monitor
-        if let Ok(Some(monitor)) = window.primary_monitor() {
-            let screen = monitor.size();
-            let mon_pos = monitor.position();
-            let scale = monitor.scale_factor();
-
-            // Get the window's actual physical size (may differ from config due to OS minimums)
-            let win_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
-                (260.0 * scale) as u32,
-                (32.0 * scale) as u32,
-            ));
-            let margin_bottom = (60.0 * scale) as i32;
-
-            let x = mon_pos.x + (screen.width as i32 - win_size.width as i32) / 2;
-            let y = mon_pos.y + screen.height as i32 - win_size.height as i32 - margin_bottom;
-
-            use tauri::PhysicalPosition;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
-        }
-        window.show().map_err(|e| format!("Failed to show throbber: {}", e))?;
-    }
-    Ok(())
+fn show_throbber() -> Result<(), String> {
+    throbber::show_listening()
 }
 
-/// Hide the throbber overlay window
+/// Hide either native overlay mode.
 #[tauri::command]
-fn hide_throbber(app: AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("throbber") {
-        window.hide().map_err(|e| format!("Failed to hide throbber: {}", e))?;
-    }
-    Ok(())
+fn hide_throbber() -> Result<(), String> {
+    throbber::hide()
+}
+
+/// Feed the main recorder's normalized RMS level to the composition visuals.
+#[tauri::command]
+fn set_throbber_level(level: f32) -> Result<(), String> {
+    throbber::set_level(level)
+}
+
+/// Show a native dictionary confirmation without creating another WebView2.
+#[tauri::command]
+fn show_throbber_confirmation(kind: String, text: String) -> Result<(), String> {
+    throbber::show_confirmation(&kind, text)
 }
 
 /// Hide main window to system tray
@@ -1057,6 +1045,12 @@ pub fn run() {
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+
+            if let Err(error) = throbber::initialize() {
+                // The overlay is feedback only. Keep transcription available if
+                // composition initialization is unavailable on this machine.
+                log::error!("[NativeThrobber] Initialization failed: {}", error);
+            }
 
             // Build system tray
             use tauri::menu::{MenuBuilder, MenuItemBuilder};
@@ -1117,6 +1111,8 @@ pub fn run() {
             capture_selected_text,
             show_throbber,
             hide_throbber,
+            set_throbber_level,
+            show_throbber_confirmation,
             hide_to_tray,
             quit_app,
             save_api_key,

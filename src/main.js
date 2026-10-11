@@ -1,5 +1,5 @@
 const { invoke } = window.__TAURI__.core;
-const { listen, emit } = window.__TAURI__.event;
+const { listen } = window.__TAURI__.event;
 const { load } = window.__TAURI__.store;
 const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -17,6 +17,7 @@ let isProcessing = false; // true while async transcribe is in-flight
 let mediaRecorder = null;
 let audioChunks = [];
 let speechRecognition = null;
+let throbberGeneration = 0;
 
 // ── DOM Elements ───────────────────────────────────────
 const micSelect = document.getElementById('mic-select');
@@ -622,9 +623,9 @@ async function setupHotkeyListener() {
     isRecording = true;
     setStatus('Listening…', false, true);
 
-    // Show throbber
+    // Show the native Windows Composition listening overlay.
     try {
-      await emit('throbber-listen', {});
+      throbberGeneration++;
       await invoke('show_throbber');
     } catch (err) {
       console.error('Throbber show failed:', err);
@@ -678,6 +679,7 @@ async function setupHotkeyListener() {
 
     // Hide throbber
     try {
+      throbberGeneration++;
       await invoke('hide_throbber');
     } catch (err) {
       console.error('Throbber hide failed:', err);
@@ -716,11 +718,10 @@ const DICT_CONFIRM_MS = 1600;
 // so the user gets feedback even when the main window isn't focused.
 async function showDictThrobberConfirm(kind, text) {
   try {
-    // Send the confirmation content first; the throbber window is persistent
-    // (created hidden at startup) so its listener is already active.
-    await emit('throbber-confirm', { kind, text });
-    await invoke('show_throbber');
+    const generation = ++throbberGeneration;
+    await invoke('show_throbber_confirmation', { kind, text });
     setTimeout(() => {
+      if (generation !== throbberGeneration) return;
       invoke('hide_throbber').catch((err) =>
         console.error('Throbber hide failed:', err)
       );
@@ -770,6 +771,58 @@ async function captureSelectionToDictionary() {
 // ── Web Speech API Mode ────────────────────────────────
 let webSpeechFinalTranscript = '';
 let webSpeechInterimTranscript = '';
+let webSpeechMeterGeneration = 0;
+let webSpeechMeterStream = null;
+let webSpeechMeterContext = null;
+let webSpeechMeterInterval = null;
+
+async function stopWebSpeechMeter() {
+  webSpeechMeterGeneration++;
+  if (webSpeechMeterInterval) {
+    clearInterval(webSpeechMeterInterval);
+    webSpeechMeterInterval = null;
+  }
+  if (webSpeechMeterStream) {
+    try { webSpeechMeterStream.getTracks().forEach(track => track.stop()); } catch {}
+    webSpeechMeterStream = null;
+  }
+  const context = webSpeechMeterContext;
+  webSpeechMeterContext = null;
+  if (context) {
+    try { await context.close(); } catch {}
+  }
+}
+
+async function startWebSpeechMeter() {
+  await stopWebSpeechMeter();
+  const generation = webSpeechMeterGeneration;
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (generation !== webSpeechMeterGeneration) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+
+    const context = new AudioContext();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 256;
+    source.connect(analyser);
+
+    webSpeechMeterStream = stream;
+    webSpeechMeterContext = context;
+    const samples = new Float32Array(analyser.fftSize);
+    webSpeechMeterInterval = setInterval(() => {
+      analyser.getFloatTimeDomainData(samples);
+      let sumSquares = 0;
+      for (let i = 0; i < samples.length; i++) sumSquares += samples[i] * samples[i];
+      setNativeThrobberLevel(Math.sqrt(sumSquares / samples.length));
+    }, 50);
+  } catch (error) {
+    console.debug('Web Speech throbber meter unavailable:', error);
+  }
+}
 
 function startWebSpeech() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -835,12 +888,15 @@ function startWebSpeech() {
     speechRecognition = null;
     webSpeechFinalTranscript = '';
     webSpeechInterimTranscript = '';
+    await stopWebSpeechMeter();
   };
 
+  void startWebSpeechMeter();
   speechRecognition.start();
 }
 
 function stopWebSpeech() {
+  void stopWebSpeechMeter();
   return new Promise((resolve) => {
     if (!speechRecognition) {
       resolve();
@@ -863,6 +919,13 @@ let rmsAudioCtx = null;
 
 // ~-40 dBFS — matches the local whisper-worker threshold
 const RMS_SILENCE_THRESHOLD = 0.01;
+
+// Map microphone RMS into the 0..1 range expected by the native composition
+// overlay. Fire-and-forget keeps audio sampling independent from IPC latency.
+function setNativeThrobberLevel(rms) {
+  const level = Math.min(1, Math.max(0, rms * 8));
+  invoke('set_throbber_level', { level }).catch(() => {});
+}
 
 function startMediaRecording() {
   // Stop any leftover stream from a previous cycle
@@ -892,6 +955,7 @@ function startMediaRecording() {
           rmsAnalyserNode.getFloatTimeDomainData(buf);
           const rms = Math.sqrt(buf.reduce((s, v) => s + v * v, 0) / buf.length);
           if (rms > recordingPeakRms) recordingPeakRms = rms;
+          setNativeThrobberLevel(rms);
         }, 50);
       } catch (e) {
         console.warn('RMS analyser unavailable:', e);
@@ -1580,6 +1644,9 @@ function startWavRecording() {
       wavScriptNode.onaudioprocess = (e) => {
         const data = e.inputBuffer.getChannelData(0);
         wavBuffers.push(new Float32Array(data));
+        let sumSquares = 0;
+        for (let i = 0; i < data.length; i++) sumSquares += data[i] * data[i];
+        setNativeThrobberLevel(Math.sqrt(sumSquares / data.length));
       };
 
       wavSourceNode.connect(wavScriptNode);
