@@ -586,7 +586,8 @@ body::before {
   transition: opacity 0.2s;
 }
 
-.history-item:hover .history-item-actions {
+.history-item:hover .history-item-actions,
+.history-item:focus-within .history-item-actions {
   opacity: 1;
 }
 
@@ -771,7 +772,8 @@ body::before {
   letter-spacing: 0.04em;
 }
 
-.dict-item:hover .dict-item-remove {
+.dict-item:hover .dict-item-remove,
+.dict-item:focus-within .dict-item-remove {
   opacity: 1;
 }
 

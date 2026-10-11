@@ -4,8 +4,6 @@
 //! This runs in its own process so GPU runtime memory is only loaded
 //! here and fully freed when the process exits.
 //!
-//! Built as separate CUDA and Vulkan binaries (mutually exclusive
-//! whisper-rs features) so users can pick an acceleration path at runtime.
 //!
 //! Protocol:
 //!   → {"cmd":"load","data_dir":"C:\\..."}
@@ -18,7 +16,7 @@
 //!   ← {"ok":true,"segments":[{"start":0.0,"end":2.5,"text":"...","no_speech_prob":0.1,"avg_logprob":-0.5}]}
 //!
 //!   → {"cmd":"backend"}
-//!   ← {"ok":true,"backend":"cuda"|"vulkan"|"cpu"}
+//!   ← {"ok":true,"backend":"vulkan"|"cpu"}
 //!
 //!   → {"cmd":"quit"}
 //!   (process exits)
@@ -32,9 +30,7 @@ use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextPar
 static CTX: Mutex<Option<WhisperContext>> = Mutex::new(None);
 
 fn backend_name() -> &'static str {
-    if cfg!(feature = "cuda") {
-        "cuda"
-    } else if cfg!(feature = "vulkan") {
+    if cfg!(feature = "vulkan") {
         "vulkan"
     } else {
         "cpu"
@@ -77,21 +73,24 @@ fn main() {
                         let _ = writeln!(out, r#"{{"ok":true}}"#);
                     }
                     Err(e) => {
-                        let _ = writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
+                        let _ =
+                            writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
                     }
                 }
             }
             "transcribe" => {
                 let audio_b64 = msg["audio_b64"].as_str().unwrap_or("");
                 let prompt = msg["prompt"].as_str();
-                let result = transcribe(audio_b64, prompt);
+                let language = msg["language"].as_str();
+                let result = transcribe(audio_b64, prompt, language);
                 match result {
                     Ok(text) => {
                         let resp = serde_json::json!({"ok": true, "text": text});
                         let _ = writeln!(out, "{}", resp);
                     }
                     Err(e) => {
-                        let _ = writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
+                        let _ =
+                            writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
                     }
                 }
             }
@@ -106,16 +105,13 @@ fn main() {
                         let _ = writeln!(out, "{}", resp);
                     }
                     Err(e) => {
-                        let _ = writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
+                        let _ =
+                            writeln!(out, r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
                     }
                 }
             }
             "backend" => {
-                let _ = writeln!(
-                    out,
-                    r#"{{"ok":true,"backend":"{}"}}"#,
-                    backend_name()
-                );
+                let _ = writeln!(out, r#"{{"ok":true,"backend":"{}"}}"#, backend_name());
             }
             "quit" => {
                 let _ = writeln!(out, r#"{{"ok":true}}"#);
@@ -171,7 +167,11 @@ fn load_model(data_dir: &str) -> Result<(), String> {
 const NO_SPEECH_PROB_THRESHOLD: f32 = 0.6;
 const AVG_LOGPROB_THRESHOLD: f32 = -1.0;
 
-fn transcribe(audio_b64: &str, prompt: Option<&str>) -> Result<String, String> {
+fn transcribe(
+    audio_b64: &str,
+    prompt: Option<&str>,
+    language: Option<&str>,
+) -> Result<String, String> {
     use base64::Engine;
 
     // Decode base64 WAV
@@ -208,7 +208,7 @@ fn transcribe(audio_b64: &str, prompt: Option<&str>) -> Result<String, String> {
         .map_err(|e| format!("Failed to create state: {e}"))?;
 
     let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-    params.set_language(Some("en"));
+    params.set_language(language);
     params.set_print_progress(false);
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
@@ -235,7 +235,6 @@ fn transcribe(audio_b64: &str, prompt: Option<&str>) -> Result<String, String> {
             Some(s) => s,
             None => continue,
         };
-
 
         // 1. No-speech probability — directly from whisper.cpp
         let no_speech_prob = seg.no_speech_probability();
@@ -290,7 +289,11 @@ fn transcribe(audio_b64: &str, prompt: Option<&str>) -> Result<String, String> {
 /// - condition_on_previous_text = true (better context within long segments)
 /// - Returns structured segments with timing and quality metrics
 /// - No RMS pre-filter (VAD already handles silence detection upstream)
-fn transcribe_segments(audio_b64: &str, prompt: Option<&str>, language: Option<&str>) -> Result<serde_json::Value, String> {
+fn transcribe_segments(
+    audio_b64: &str,
+    prompt: Option<&str>,
+    language: Option<&str>,
+) -> Result<serde_json::Value, String> {
     use base64::Engine;
 
     // Decode base64 WAV
@@ -386,8 +389,7 @@ fn transcribe_segments(audio_b64: &str, prompt: Option<&str>, language: Option<&
 
 fn wav_to_pcm_f32(raw: &[u8]) -> Result<Vec<f32>, String> {
     let cursor = std::io::Cursor::new(raw);
-    let reader = hound::WavReader::new(cursor)
-        .map_err(|e| format!("Failed to read WAV: {e}"))?;
+    let reader = hound::WavReader::new(cursor).map_err(|e| format!("Failed to read WAV: {e}"))?;
 
     let spec = reader.spec();
 
@@ -400,12 +402,10 @@ fn wav_to_pcm_f32(raw: &[u8]) -> Result<Vec<f32>, String> {
                 .map(|s| s as f32 / max_val)
                 .collect()
         }
-        hound::SampleFormat::Float => {
-            reader
-                .into_samples::<f32>()
-                .filter_map(|s| s.ok())
-                .collect()
-        }
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .filter_map(|s| s.ok())
+            .collect(),
     };
 
     // Stereo → mono

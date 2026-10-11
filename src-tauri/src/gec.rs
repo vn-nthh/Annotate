@@ -14,7 +14,8 @@ use tokenizers::Tokenizer;
 // ── Constants ──────────────────────────────────────────
 
 /// Cloudflare R2 public URL for the pre-exported ONNX model bundle
-const MODEL_URL: &str = "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/gector/gector-bert-base-onnx.zip";
+const MODEL_URL: &str =
+    "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/gector/gector-bert-base-onnx.zip";
 const MODEL_SHA256: &str = "94b0f12e62f8ea19873fb5a957516518ddc597dbe461cd5a59976984294e9880";
 const MODEL_DIR_NAME: &str = "gector";
 const SOURCE_MARKER_FILENAME: &str = ".source-sha256";
@@ -107,7 +108,10 @@ fn install_model_archive(
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let Some(filename) = Path::new(entry.name()).file_name().and_then(|name| name.to_str()) else {
+        let Some(filename) = Path::new(entry.name())
+            .file_name()
+            .and_then(|name| name.to_str())
+        else {
             continue;
         };
         if !required.contains(&filename) {
@@ -118,7 +122,10 @@ fn install_model_archive(
         std::io::copy(&mut entry, &mut output_file)?;
     }
 
-    if required.iter().any(|filename| !staging_dir.join(filename).exists()) {
+    if required
+        .iter()
+        .any(|filename| !staging_dir.join(filename).exists())
+    {
         let _ = std::fs::remove_dir_all(staging_dir);
         return Err("Verified GEC archive is missing required files".into());
     }
@@ -141,7 +148,9 @@ pub fn is_loaded() -> bool {
 
 /// Load the ONNX model, tokenizer, and tag vocabulary into memory.
 pub fn ensure_loaded(data_dir: &Path) -> Result<(), String> {
-    let mut guard = GEC_MODEL.lock().map_err(|e| format!("GEC lock poisoned: {}", e))?;
+    let mut guard = GEC_MODEL
+        .lock()
+        .map_err(|e| format!("GEC lock poisoned: {}", e))?;
     if guard.is_some() {
         return Ok(());
     }
@@ -173,8 +182,8 @@ pub fn ensure_loaded(data_dir: &Path) -> Result<(), String> {
     let labels_path = dir.join(LABELS_FILENAME);
     let labels_json = std::fs::read_to_string(&labels_path)
         .map_err(|e| format!("Failed to read labels: {}", e))?;
-    let id2label: Vec<String> = serde_json::from_str(&labels_json)
-        .map_err(|e| format!("Failed to parse labels: {}", e))?;
+    let id2label: Vec<String> =
+        serde_json::from_str(&labels_json).map_err(|e| format!("Failed to parse labels: {}", e))?;
 
     // Load verb vocabulary
     let verb_path = dir.join(VERB_VOCAB_FILENAME);
@@ -210,13 +219,15 @@ pub fn unload() {
 /// Parse verb-form-vocab.txt: each line is "verb\told_form\tnew_form\tconjugated"
 /// We store as "verb_oldform_newform" → "conjugated"
 fn load_verb_vocab(path: &Path) -> Result<HashMap<String, String>, String> {
-    let content = std::fs::read_to_string(path)
-        .map_err(|e| format!("Failed to read verb vocab: {}", e))?;
+    let content =
+        std::fs::read_to_string(path).map_err(|e| format!("Failed to read verb vocab: {}", e))?;
 
     let mut map = HashMap::new();
     for line in content.lines() {
         let line = line.trim();
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         // Format: "word_conjugated:FROM_TO"
         if let Some((word_part, tag_part)) = line.split_once(':') {
             if let Some((base_word, conjugated)) = word_part.split_once('_') {
@@ -237,9 +248,7 @@ pub fn correct_text(text: &str) -> Result<String, String> {
         .lock()
         .map_err(|e| format!("GEC model lock poisoned: {}", e))?;
 
-    let model = guard
-        .as_mut()
-        .ok_or("GEC model not loaded")?;
+    let model = guard.as_mut().ok_or("GEC model not loaded")?;
 
     let mut current = text.to_string();
 
@@ -265,7 +274,11 @@ fn run_single_pass(model: &mut GecModel, text: &str) -> Result<String, String> {
         .map_err(|e| format!("Tokenization failed: {}", e))?;
 
     let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
-    let attention_mask: Vec<i64> = encoding.get_attention_mask().iter().map(|&m| m as i64).collect();
+    let attention_mask: Vec<i64> = encoding
+        .get_attention_mask()
+        .iter()
+        .map(|&m| m as i64)
+        .collect();
     let tokens: Vec<&str> = encoding.get_tokens().iter().map(|s| s.as_str()).collect();
     let offsets: Vec<(usize, usize)> = encoding.get_offsets().to_vec();
     let seq_len = input_ids.len().min(MAX_SEQ_LEN);
@@ -277,13 +290,13 @@ fn run_single_pass(model: &mut GecModel, text: &str) -> Result<String, String> {
     // Create input tensors using (shape, data) tuple format
     let ids_tensor = ort::value::Tensor::from_array(
         ndarray::Array2::from_shape_vec((1, seq_len), input_ids.to_vec())
-            .map_err(|e| format!("Failed to create input tensor: {}", e))?
+            .map_err(|e| format!("Failed to create input tensor: {}", e))?,
     )
     .map_err(|e| format!("Failed to create ids tensor: {}", e))?;
 
     let mask_tensor = ort::value::Tensor::from_array(
         ndarray::Array2::from_shape_vec((1, seq_len), attention_mask.to_vec())
-            .map_err(|e| format!("Failed to create mask tensor: {}", e))?
+            .map_err(|e| format!("Failed to create mask tensor: {}", e))?,
     )
     .map_err(|e| format!("Failed to create mask tensor: {}", e))?;
 
@@ -312,7 +325,10 @@ fn run_single_pass(model: &mut GecModel, text: &str) -> Result<String, String> {
 
     log::info!(
         "[GEC] Logits: {} elements, seq_len={}, output_classes={}, id2label={}",
-        logits_data.len(), seq_len, num_output_classes, model.id2label.len()
+        logits_data.len(),
+        seq_len,
+        num_output_classes,
+        model.id2label.len()
     );
 
     // Get predicted tag for each token (argmax over last dimension)
@@ -403,7 +419,10 @@ fn apply_tags(
             // Skip this token (don't add to result)
             // Note: do NOT suppress continuations — model may want to delete
             // just a prefix (e.g. "un" from "unhappy" → "happy")
-        } else if let Some(replacement) = tag.strip_prefix("$REPLACE_").or_else(|| tag.strip_prefix("REPLACE_")) {
+        } else if let Some(replacement) = tag
+            .strip_prefix("$REPLACE_")
+            .or_else(|| tag.strip_prefix("REPLACE_"))
+        {
             result_parts.push(replacement.to_string());
             // Suppress continuations — the replacement is a complete word,
             // keeping leftover subword pieces would create Frankenwords
@@ -411,7 +430,10 @@ fn apply_tags(
             if !is_continuation {
                 suppress_continuations = true;
             }
-        } else if let Some(append_word) = tag.strip_prefix("$APPEND_").or_else(|| tag.strip_prefix("APPEND_")) {
+        } else if let Some(append_word) = tag
+            .strip_prefix("$APPEND_")
+            .or_else(|| tag.strip_prefix("APPEND_"))
+        {
             result_parts.push(token_text.to_string());
             result_parts.push(format!(" {}", append_word));
         } else if tag.starts_with("$TRANSFORM_VERB_") || tag.starts_with("TRANSFORM_VERB_") {
@@ -460,22 +482,14 @@ fn apply_tags(
 
 /// Apply a verb transformation tag using the verb vocabulary.
 /// Tag format: $TRANSFORM_VERB_{FROM}_{TO}  e.g. $TRANSFORM_VERB_VB_VBD
-fn apply_verb_transform(
-    token: &str,
-    tag: &str,
-    verb_vocab: &HashMap<String, String>,
-) -> String {
+fn apply_verb_transform(token: &str, tag: &str, verb_vocab: &HashMap<String, String>) -> String {
     // Extract FROM and TO forms from tag
     let parts: Vec<&str> = tag.split('_').collect();
     if parts.len() >= 4 {
         // Tag might be $TRANSFORM_VERB_VB_VBD or TRANSFORM_VERB_VB_VBD
         let from = parts[parts.len() - 2];
         let to = parts[parts.len() - 1];
-        let key = format!("{}_{}_{}",
-            token.to_lowercase(),
-            from,
-            to
-        );
+        let key = format!("{}_{}_{}", token.to_lowercase(), from, to);
         if let Some(conjugated) = verb_vocab.get(&key) {
             return conjugated.clone();
         }
