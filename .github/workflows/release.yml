@@ -59,7 +59,16 @@ jobs:
       - name: Test native behavior
         run: cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml
 
-      - name: Package portable native app
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
+              -not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'))) {
+            choco install nsis -y --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          }
+
+      - name: Package native app and installer
         shell: pwsh
         run: ./scripts/package-native.ps1 -SkipBuild
 
@@ -73,7 +82,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: annotate-windows-x64
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*-setup.exe
 
       - name: Create draft release
         if: github.ref_type == 'tag'
@@ -82,5 +93,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $archive = (Get-ChildItem -LiteralPath dist -Filter '*.zip').FullName
-          gh release create $env:GITHUB_REF_NAME $archive --draft --verify-tag --title "Annotate $env:GITHUB_REF_NAME" --notes 'Extract the Windows x64 ZIP and run annotate.exe. Keep the included DLL and Vulkan worker beside the app.'
+          $installer = (Get-ChildItem -LiteralPath dist -Filter '*-setup.exe').FullName
+          gh release create $env:GITHUB_REF_NAME $installer $archive --draft --verify-tag --title "Annotate $env:GITHUB_REF_NAME" --notes 'Run the setup .exe to install or upgrade an existing installation; settings, dictionary and history are kept. Alternatively extract the portable ZIP and run annotate.exe, keeping the included DLL and Vulkan worker beside the app.'
           if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }

@@ -448,11 +448,7 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     CallNextHookEx(None, code, wparam, lparam)
 }
 unsafe fn hotkey_message(msg: &MSG) {
-    if crate::native_core::get()
-        .snapshot()
-        .recording_hotkey
-        .is_some()
-    {
+    if crate::native_core::get().recording_hotkey_active() {
         return;
     }
     let slot = msg.wParam.0.saturating_sub(1);

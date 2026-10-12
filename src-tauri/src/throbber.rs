@@ -49,6 +49,9 @@ mod imp {
     const CONFIRM_CANVAS_WIDTH: i32 = 260;
     const BOTTOM_MARGIN: i32 = 60;
     const TIMER_ID: usize = 1;
+    const CONFIRM_TIMER_ID: usize = 2;
+    // Matches the browser overlay's dictionary confirmation duration.
+    const CONFIRM_DURATION_MS: u32 = 1600;
     const WAKE_MESSAGE: u32 = 0x8000 + 0x41;
 
     static HANDLE: OnceLock<NativeThrobberHandle> = OnceLock::new();
@@ -137,10 +140,10 @@ mod imp {
     }
 
     pub fn show_confirmation(kind: &str, text: String) -> Result<(), String> {
-        let kind = if kind == "duplicate" {
-            ConfirmationKind::Duplicate
-        } else {
-            ConfirmationKind::Added
+        let kind = match kind {
+            "added" => ConfirmationKind::Added,
+            "duplicate" => ConfirmationKind::Duplicate,
+            _ => return Err(format!("unknown confirmation kind: {kind}")),
         };
         send(Command::ShowConfirmation { kind, text })
     }
@@ -191,6 +194,11 @@ mod imp {
                     && message.wParam.0 == TIMER_ID
                 {
                     state.tick();
+                } else if message.message == WM_TIMER
+                    && message.hwnd == state.confirmation_hwnd
+                    && message.wParam.0 == CONFIRM_TIMER_ID
+                {
+                    state.hide();
                 } else {
                     let _ = TranslateMessage(&message);
                     DispatchMessageW(&message);
@@ -288,6 +296,8 @@ mod imp {
         }
 
         unsafe fn show_listening(&mut self) {
+            // A pending confirmation timeout must not hide the new listening pill.
+            let _ = KillTimer(Some(self.confirmation_hwnd), CONFIRM_TIMER_ID);
             let _ = ShowWindow(self.confirmation_hwnd, SW_HIDE);
             self.animations_enabled = client_animations_enabled();
             self.level = 0.0;
@@ -310,10 +320,17 @@ mod imp {
                 return;
             }
             let _ = ShowWindow(self.confirmation_hwnd, SW_SHOWNOACTIVATE);
+            SetTimer(
+                Some(self.confirmation_hwnd),
+                CONFIRM_TIMER_ID,
+                CONFIRM_DURATION_MS,
+                None,
+            );
         }
 
         unsafe fn hide(&mut self) {
             let _ = KillTimer(Some(self.listening_hwnd), TIMER_ID);
+            let _ = KillTimer(Some(self.confirmation_hwnd), CONFIRM_TIMER_ID);
             let _ = ShowWindow(self.listening_hwnd, SW_HIDE);
             let _ = ShowWindow(self.confirmation_hwnd, SW_HIDE);
             self.level = 0.0;

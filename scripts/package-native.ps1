@@ -48,3 +48,18 @@ Settings and data remain in your Windows profile when this folder is replaced.
 $archivePath = Join-Path $dist "Annotate-$version-windows-x64.zip"
 Compress-Archive -LiteralPath $packageDir -DestinationPath $archivePath -Force
 Write-Host "Native package: $archivePath"
+
+# The installer upgrades previous Tauri NSIS installs in place.
+$makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+if (-not $makensis) {
+  # Standard NSIS install, or the copy cached by earlier Tauri builds.
+  $makensis = @(
+    (Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'),
+    (Join-Path $env:LOCALAPPDATA 'tauri\NSIS\makensis.exe')
+  ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+  if (-not $makensis) { throw 'NSIS (makensis) is required to build the installer.' }
+}
+$installerPath = Join-Path $dist "Annotate-$version-windows-x64-setup.exe"
+& $makensis /V2 "/DVERSION=$version" "/DSOURCE_DIR=$packageDir" "/DICON=$(Join-Path $repoRoot 'src-tauri\icons\icon.ico')" "/DOUTFILE=$installerPath" (Join-Path $PSScriptRoot 'installer.nsi')
+if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
+Write-Host "Native installer: $installerPath"

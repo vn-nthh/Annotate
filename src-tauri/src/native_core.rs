@@ -12,6 +12,7 @@ use std::{
 };
 
 static CORE: OnceLock<Arc<Core>> = OnceLock::new();
+const MAX_CAPTURED_TERM_CHARS: usize = 100;
 pub fn get() -> &'static Arc<Core> {
     CORE.get().expect("native app initialized")
 }
@@ -190,6 +191,16 @@ impl Core {
     pub fn snapshot(&self) -> State {
         self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
+    fn mode(&self) -> String {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).mode()
+    }
+    pub fn recording_hotkey_active(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recording_hotkey
+            .is_some()
+    }
     pub fn change(&self, f: impl FnOnce(&mut State)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
         crate::native_ui::refresh();
@@ -289,6 +300,24 @@ impl Core {
                     _ => {}
                 }
             }
+            // Replaces the browser build's onboarding: Web Speech users migrate
+            // to Groq, and new installs default to it, without a key. Open the
+            // engine settings instead of failing silently on the first hotkey.
+            let needs_setup = {
+                let state = core.state.lock().unwrap_or_else(|e| e.into_inner());
+                match state.mode().as_str() {
+                    "local" => false,
+                    "azure-mai" => {
+                        state.label("azure-key", "").trim().is_empty()
+                            || state.setting("azureMaiEndpoint", "").trim().is_empty()
+                    }
+                    _ => state.label("groq-key", "").trim().is_empty(),
+                }
+            };
+            if needs_setup {
+                crate::native_ui::show_settings();
+                core.status("Add an API key", true);
+            }
             for (key, check) in [
                 ("whisper", crate::check_whisper_model(app.clone())),
                 ("gec", crate::check_gec_model(app.clone())),
@@ -301,15 +330,41 @@ impl Core {
                     });
                 }
             }
-            core.sync.migrate_saved_credentials()?;
-            let settings = core.snapshot();
-            for (id, key) in [("hotkey-btn", "hotkey"), ("dict-hotkey-btn", "dictHotkey")] {
-                let combo = settings.setting(key, "");
-                if !combo.is_empty() {
-                    core.register_shortcut(id, &combo)?;
+            if let Err(error) = core.sync.migrate_saved_credentials() {
+                core.status(&error, true);
+            }
+            // Register each shortcut independently so one conflict does not
+            // leave the other unbound. Retries cover a previous instance that is
+            // still releasing its registrations.
+            let (hotkey, dict_hotkey) = {
+                let state = core.state.lock().unwrap_or_else(|e| e.into_inner());
+                (state.setting("hotkey", ""), state.setting("dictHotkey", ""))
+            };
+            let mut failure = None;
+            for (slot, combo, label) in [
+                (0, hotkey, "Hotkey failed"),
+                (1, dict_hotkey, "Dictionary hotkey failed"),
+            ] {
+                if combo.is_empty() {
+                    continue;
+                }
+                let mut result = native_app::register(slot, &combo);
+                for _ in 1..3 {
+                    if result.is_ok() {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    result = native_app::register(slot, &combo);
+                }
+                if let Err(error) = result {
+                    log::error!("[Hotkey] {label}: {error}");
+                    failure.get_or_insert(label);
                 }
             }
-            Ok::<(), String>(())
+            match failure {
+                Some(label) => Err(label.to_owned()),
+                None => Ok(()),
+            }
         })
         .await;
         match setup {
@@ -317,31 +372,28 @@ impl Core {
             Err(error) => self.status(&error.to_string(), true),
             _ => {}
         }
-        if !self.snapshot().data.data.migrated {
-            let migrated = native_app::spawn_blocking(|| {
-                crate::native_migrate::read_legacy(&get().app.app_local_data_dir()?)
+        let migrated = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .data
+            .data
+            .migrated;
+        if !migrated {
+            // A failed import leaves `migrated` unset so it is retried next launch,
+            // but it must not keep sync disabled for this session.
+            let imported = native_app::spawn_blocking(|| {
+                let (dictionary, history) =
+                    crate::native_migrate::read_legacy(&get().app.app_local_data_dir()?)?;
+                let mut state = get().state.lock().unwrap_or_else(|e| e.into_inner());
+                state.data.import(&dictionary, &history)
             })
-            .await;
-            match migrated {
-                Ok(Ok((dictionary, history))) => {
-                    let result = {
-                        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.data.import(&dictionary, &history)
-                    };
-                    if let Err(e) = result {
-                        self.status(&e, true);
-                        return;
-                    }
-                    crate::native_ui::refresh();
-                }
-                Ok(Err(e)) => {
-                    self.status(&e, true);
-                    return;
-                }
-                Err(e) => {
-                    self.status(&e.to_string(), true);
-                    return;
-                }
+            .await
+            .map_err(|e| e.to_string())
+            .and_then(|result| result);
+            match imported {
+                Ok(()) => crate::native_ui::refresh(),
+                Err(error) => self.status(&error, true),
             }
         }
         self.sync.initialize().await;
@@ -490,7 +542,7 @@ impl Core {
                 let mode = id
                     .strip_prefix("apikey-input:")
                     .map(str::to_owned)
-                    .unwrap_or_else(|| self.snapshot().mode());
+                    .unwrap_or_else(|| self.mode());
                 if let Err(error) = self.save_provider_key(&mode, value) {
                     self.status(&error, true);
                 }
@@ -716,7 +768,7 @@ impl Core {
     }
 
     fn unload_idle_whisper(&self) {
-        if self.snapshot().mode() == "local" {
+        if self.mode() == "local" || !crate::whisper_local::is_loaded() {
             return;
         }
         native_app::spawn(async {
@@ -780,11 +832,13 @@ impl Core {
     }
 
     pub fn hotkey(&self, prefix: &str, down: bool) {
-        if self.snapshot().recording_hotkey.is_some() && (down || prefix == "dict-hotkey") {
+        if self.recording_hotkey_active() && (down || prefix == "dict-hotkey") {
             return;
         }
         if prefix == "dict-hotkey" {
-            if !down {
+            // Capture on press, as the browser build did; capture_selected_text
+            // releases the hotkey's modifiers before sending Ctrl+C.
+            if down {
                 if self
                     .capture
                     .lock()
@@ -805,38 +859,8 @@ impl Core {
                         return;
                     }
                     match selected {
-                        Ok(Ok(text)) => {
-                            let duplicate =
-                                get()
-                                    .snapshot()
-                                    .data
-                                    .data
-                                    .dictionary
-                                    .terms
-                                    .iter()
-                                    .any(|term| {
-                                        native_data::key(&term.value) == native_data::key(&text)
-                                    });
-                            if text.trim().is_empty() {
-                                let _ = crate::throbber::show_confirmation(
-                                    "error",
-                                    "No text selected".into(),
-                                );
-                            } else if get().data_change(|d| {
-                                d.dictionary.add(&text);
-                            }) {
-                                let _ = crate::throbber::show_confirmation(
-                                    if duplicate { "duplicate" } else { "added" },
-                                    text,
-                                );
-                            } else {
-                                let _ = crate::throbber::show_confirmation(
-                                    "error",
-                                    "Could not save term".into(),
-                                );
-                            }
-                        }
-                        _ => get().status("Could not capture selection", true),
+                        Ok(Ok(text)) => get().add_captured_term(&text),
+                        _ => get().status("Capture failed", true),
                     }
                 });
             }
@@ -866,6 +890,22 @@ impl Core {
                 let endpoint = config.endpoint.clone();
                 native_app::spawn(async move {
                     let _ = crate::warm_azure_transcription(endpoint).await;
+                });
+            }
+            // Load the model while the user speaks rather than at startup, so the
+            // worker's memory is only committed once local dictation is used.
+            if config.mode == "local" && !crate::whisper_local::is_loaded() {
+                native_app::spawn(async {
+                    let core = get();
+                    let _operation = core.whisper_operation.lock().await;
+                    if core.mode() == "local"
+                        && crate::check_whisper_model(core.app.clone()).unwrap_or(false)
+                        && crate::load_whisper_model(core.app.clone(), Some("vulkan".into()))
+                            .await
+                            .is_ok()
+                    {
+                        core.refresh_model_state();
+                    }
                 });
             }
             let capture =
@@ -909,6 +949,36 @@ impl Core {
             } else {
                 self.status("Ready", false);
             }
+        }
+    }
+
+    fn add_captured_term(&self, text: &str) {
+        let (term, short) = match captured_term(text) {
+            Ok(term) => term,
+            Err(error) => {
+                self.status(error, true);
+                return;
+            }
+        };
+        let normalized = native_data::key(&term);
+        let duplicate = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .data
+            .data
+            .dictionary
+            .terms
+            .iter()
+            .any(|existing| native_data::key(&existing.value) == normalized);
+        if duplicate {
+            self.status(&format!("\"{short}\" already in dictionary"), false);
+            let _ = crate::throbber::show_confirmation("duplicate", short);
+        } else if self.data_change(|d| {
+            d.dictionary.add(&term);
+        }) {
+            self.status(&format!("Added \"{short}\""), false);
+            let _ = crate::throbber::show_confirmation("added", short);
         }
     }
 
@@ -1015,6 +1085,25 @@ impl Core {
     }
 }
 
+/// Returns the dictionary term for a captured selection and its short label.
+fn captured_term(text: &str) -> Result<(String, String), &'static str> {
+    let term = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let length = term.chars().count();
+    if length == 0 {
+        return Err("No text selected");
+    }
+    // Dictionary terms are words or phrases; reject accidental large selections.
+    if length > MAX_CAPTURED_TERM_CHARS {
+        return Err("Selection too long");
+    }
+    let short = if length > 24 {
+        format!("{}…", term.chars().take(24).collect::<String>())
+    } else {
+        term.clone()
+    };
+    Ok((term, short))
+}
+
 fn download_key(id: &str) -> Option<&'static str> {
     match id {
         "whisper-download-btn" | "whisper-load-btn" => Some("whisper"),
@@ -1062,6 +1151,21 @@ mod tests {
             normalize_output("Cafe\u{301}\u{a0}hello\u{200b}\nworld"),
             "Café hello\r\nworld"
         );
+    }
+
+    #[test]
+    fn captured_selections_match_the_browser_dictionary_rules() {
+        assert_eq!(
+            captured_term("  Annotate\r\n  app\t").unwrap(),
+            ("Annotate app".into(), "Annotate app".into())
+        );
+        let long = "é".repeat(30);
+        let (term, short) = captured_term(&long).unwrap();
+        assert_eq!(term, long);
+        assert_eq!(short, format!("{}…", "é".repeat(24)));
+        assert_eq!(captured_term(" \n "), Err("No text selected"));
+        assert!(captured_term(&"a".repeat(100)).is_ok());
+        assert_eq!(captured_term(&"a".repeat(101)), Err("Selection too long"));
     }
 
     #[test]

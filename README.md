@@ -26,8 +26,12 @@ CUDA are no longer available; older saved selections migrate to Groq and Vulkan.
 
 ## Download
 
-Download the Windows x64 ZIP from [Releases](https://github.com/vn-nthh/Annotate/releases),
-extract the whole folder, and run `annotate.exe`. Keep `DirectML.dll` and
+Download the Windows x64 setup from [Releases](https://github.com/vn-nthh/Annotate/releases)
+and run it. It installs per user without administrator rights and upgrades an
+existing installation in place, keeping settings, dictionary, history and models.
+If you installed an older release with the `.msi`, remove that entry from
+Settings > Apps afterwards. A portable ZIP is also available: extract the whole
+folder and run `annotate.exe`, keeping `DirectML.dll` and
 `whisper-worker-vulkan.exe` beside it. Models download from Settings on demand.
 
 Requirements are Windows 10/11 x64 and the
@@ -51,7 +55,7 @@ Run these commands in PowerShell from the repository root:
 # Build and run a debug executable.
 ./scripts/build-native.ps1 -Configuration Debug -Run
 
-# Build a portable release ZIP under dist/.
+# Build the portable ZIP and the setup .exe under dist/ (requires NSIS).
 ./scripts/package-native.ps1
 
 # Check Rust behavior.

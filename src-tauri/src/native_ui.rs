@@ -140,10 +140,20 @@ pub fn initialize() -> Result<(), String> {
                 if msg.hwnd.0.is_null() {
                     match msg.message {
                         SHOW => {
+                            // wParam 1 asks for the Settings tab (first-run setup).
+                            let settings = msg.wParam.0 == 1;
                             if let Some(w) = window.as_mut() {
+                                if settings && w.memory.tab != "settings" {
+                                    w.commit_edits();
+                                    w.memory.tab = "settings".into();
+                                    w.update(true);
+                                }
                                 let _ = ShowWindow(w.hwnd, SW_RESTORE);
                                 let _ = SetForegroundWindow(w.hwnd);
                             } else {
+                                if settings {
+                                    memory.tab = "settings".into();
+                                }
                                 match Window::create(std::mem::take(&mut memory)) {
                                     Ok(mut w) => {
                                         SetWindowLongPtrW(
@@ -218,10 +228,17 @@ pub fn refresh() {
     }
 }
 pub fn show() {
+    post_show(0);
+}
+/// Shows the window on the Settings tab, e.g. when no engine is configured yet.
+pub fn show_settings() {
+    post_show(1);
+}
+fn post_show(tab: usize) {
     let thread = THREAD.load(Ordering::Acquire);
     if thread != 0 {
         unsafe {
-            let _ = PostThreadMessageW(thread, SHOW, WPARAM(0), LPARAM(0));
+            let _ = PostThreadMessageW(thread, SHOW, WPARAM(tab), LPARAM(0));
         }
     }
 }
