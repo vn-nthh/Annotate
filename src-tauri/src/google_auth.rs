@@ -9,7 +9,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use rand::rngs::OsRng;
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -19,6 +19,17 @@ const OAUTH_TIMEOUT: Duration = Duration::from_secs(300);
 
 static OAUTH_ACTIVE: AtomicBool = AtomicBool::new(false);
 static OAUTH_CANCELLED: AtomicBool = AtomicBool::new(false);
+static OAUTH_URL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static OAUTH_CANCEL: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub(crate) fn reopen_google_oauth() -> Result<(), String> {
+    let url = OAUTH_URL
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone()
+        .ok_or("No sign-in is pending")?;
+    open::that(url).map_err(|e| e.to_string())
+}
 
 struct OAuthActiveGuard;
 
@@ -34,15 +45,16 @@ impl OAuthActiveGuard {
 
 impl Drop for OAuthActiveGuard {
     fn drop(&mut self) {
+        *OAUTH_URL.lock().unwrap_or_else(|e| e.into_inner()) = None;
         OAUTH_CANCELLED.store(false, Ordering::SeqCst);
         OAUTH_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
 
-#[derive(Debug, Serialize)]
 pub struct OAuthTokenResult {
-    access_token: String,
-    expires_in: u64,
+    pub(crate) access_token: String,
+    pub(crate) expires_in: u64,
+    pub(crate) refresh_token: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -59,7 +71,6 @@ struct AuthorizationCode {
     redirect_uri: String,
 }
 
-#[tauri::command]
 pub async fn google_oauth(client_id: String, scopes: String) -> Result<OAuthTokenResult, String> {
     validate_client_id(&client_id)?;
     let _guard = OAuthActiveGuard::acquire()?;
@@ -67,7 +78,7 @@ pub async fn google_oauth(client_id: String, scopes: String) -> Result<OAuthToke
     let state = random_base64url(32);
     let verifier = random_base64url(32);
     let challenge = pkce_challenge(&verifier);
-    let code = tauri::async_runtime::spawn_blocking({
+    let code = crate::native_app::spawn_blocking({
         let client_id = client_id.clone();
         let scopes = scopes.clone();
         let state = state.clone();
@@ -76,21 +87,28 @@ pub async fn google_oauth(client_id: String, scopes: String) -> Result<OAuthToke
     .await
     .map_err(|error| format!("OAuth task failed: {error}"))??;
 
-    let token = exchange_authorization_code(&client_id, &code, &verifier).await?;
-    if let Some(refresh_token) = token.refresh_token.as_deref() {
-        save_refresh_token(refresh_token)?;
-    } else if !has_refresh_token()? {
-        return Err("Google did not return a refresh token; revoke access and sign in again".into());
+    let cancelled = OAUTH_CANCEL.notified();
+    tokio::pin!(cancelled);
+    cancelled.as_mut().enable();
+    if OAUTH_CANCELLED.load(Ordering::SeqCst) {
+        return Err("oauth_cancelled".into());
     }
-
+    let token = tokio::select! {
+        _ = &mut cancelled => return Err("oauth_cancelled".into()),
+        token = exchange_authorization_code(&client_id, &code, &verifier) => token?,
+    };
+    // Native sync persists this only after checking its current session. Saving
+    // here would allow sign-out during the exchange to restore the credential.
     token_result(token)
 }
 
-#[tauri::command]
 pub async fn google_refresh_access_token(client_id: String) -> Result<OAuthTokenResult, String> {
     validate_client_id(&client_id)?;
     let refresh_token = load_refresh_token()?.ok_or("No Google refresh token is stored")?;
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
     let body = urlencoded_form(&[
         ("client_id", client_id.as_str()),
         ("refresh_token", refresh_token.as_str()),
@@ -98,7 +116,10 @@ pub async fn google_refresh_access_token(client_id: String) -> Result<OAuthToken
     ]);
     let response = client
         .post(TOKEN_URL)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .body(body)
         .send()
         .await
@@ -106,12 +127,10 @@ pub async fn google_refresh_access_token(client_id: String) -> Result<OAuthToken
     token_result(parse_token_response(response).await?)
 }
 
-#[tauri::command]
 pub fn has_google_refresh_token() -> Result<bool, String> {
     has_refresh_token()
 }
 
-#[tauri::command]
 pub fn migrate_google_refresh_token(token: String) -> Result<(), String> {
     if token.trim().is_empty() || has_refresh_token()? {
         return Ok(());
@@ -119,7 +138,6 @@ pub fn migrate_google_refresh_token(token: String) -> Result<(), String> {
     save_refresh_token(token.trim())
 }
 
-#[tauri::command]
 pub fn clear_google_refresh_token() -> Result<(), String> {
     let entry = refresh_token_entry()?;
     match entry.delete_credential() {
@@ -128,10 +146,17 @@ pub fn clear_google_refresh_token() -> Result<(), String> {
     }
 }
 
-#[tauri::command]
+pub(crate) fn store_google_refresh_token(token: &str) -> Result<(), String> {
+    if token.trim().is_empty() {
+        return Err("Google refresh token is empty".into());
+    }
+    save_refresh_token(token)
+}
+
 pub fn cancel_google_oauth() {
     if OAUTH_ACTIVE.load(Ordering::SeqCst) {
         OAUTH_CANCELLED.store(true, Ordering::SeqCst);
+        OAUTH_CANCEL.notify_waiters();
     }
 }
 
@@ -146,9 +171,13 @@ fn capture_authorization_code(
     listener
         .set_nonblocking(true)
         .map_err(|error| format!("OAuth listener setup failed: {error}"))?;
-    let port = listener.local_addr().map_err(|error| error.to_string())?.port();
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
     let redirect_uri = format!("http://127.0.0.1:{port}");
     let auth_url = authorization_url(client_id, scopes, &redirect_uri, expected_state, challenge);
+    *OAUTH_URL.lock().unwrap_or_else(|e| e.into_inner()) = Some(auth_url.clone());
 
     open::that(&auth_url).map_err(|error| format!("Failed to open browser: {error}"))?;
     let deadline = Instant::now() + OAUTH_TIMEOUT;
@@ -169,28 +198,25 @@ fn capture_authorization_code(
 
         let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
         let mut buffer = [0_u8; 16_384];
-        let read = stream
-            .read(&mut buffer)
-            .map_err(|error| format!("OAuth redirect read failed: {error}"))?;
+        let read = match stream.read(&mut buffer) {
+            Ok(read) => read,
+            Err(_) => {
+                send_browser_response(&mut stream, false);
+                continue;
+            }
+        };
         let request = String::from_utf8_lossy(&buffer[..read]);
-
-        if let Some(error) = extract_query_param(&request, "error") {
-            send_browser_response(&mut stream, false);
-            return Err(format!("Google OAuth failed: {error}"));
+        match authorization_callback(&request, expected_state) {
+            Ok(Some(code)) => {
+                send_browser_response(&mut stream, true);
+                return Ok(AuthorizationCode { code, redirect_uri });
+            }
+            Ok(None) => send_browser_response(&mut stream, false),
+            Err(error) => {
+                send_browser_response(&mut stream, false);
+                return Err(error);
+            }
         }
-
-        let state = extract_query_param(&request, "state");
-        let code = extract_query_param(&request, "code");
-        if state.as_deref() != Some(expected_state) || code.is_none() {
-            send_browser_response(&mut stream, false);
-            continue;
-        }
-
-        send_browser_response(&mut stream, true);
-        return Ok(AuthorizationCode {
-            code: code.expect("code checked above"),
-            redirect_uri,
-        });
     }
 
     Err("Google sign-in timed out".into())
@@ -201,7 +227,10 @@ async fn exchange_authorization_code(
     code: &AuthorizationCode,
     verifier: &str,
 ) -> Result<GoogleTokenResponse, String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .build()
+        .map_err(|error| error.to_string())?;
     let body = urlencoded_form(&[
         ("code", code.code.as_str()),
         ("client_id", client_id),
@@ -211,7 +240,10 @@ async fn exchange_authorization_code(
     ]);
     let response = client
         .post(TOKEN_URL)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .body(body)
         .send()
         .await
@@ -248,8 +280,10 @@ fn token_result(token: GoogleTokenResponse) -> Result<OAuthTokenResult, String> 
     Ok(OAuthTokenResult {
         access_token: token
             .access_token
+            .filter(|token| !token.trim().is_empty())
             .ok_or("Google token response did not include an access token")?,
         expires_in: token.expires_in.unwrap_or(3600),
+        refresh_token: token.refresh_token,
     })
 }
 
@@ -313,9 +347,15 @@ fn has_refresh_token() -> Result<bool, String> {
 
 fn send_browser_response(stream: &mut std::net::TcpStream, success: bool) {
     let (status, message) = if success {
-        ("200 OK", "Sign-in complete. You can close this tab and return to Annotate.")
+        (
+            "200 OK",
+            "Sign-in complete. You can close this tab and return to Annotate.",
+        )
     } else {
-        ("400 Bad Request", "This sign-in response was not accepted. Return to Annotate and try again.")
+        (
+            "400 Bad Request",
+            "This sign-in response was not accepted. Return to Annotate and try again.",
+        )
     };
     let html = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Annotate</title></head><body><main><p>{message}</p></main></body></html>"
@@ -345,28 +385,30 @@ fn extract_query_param(request: &str, param: &str) -> Option<String> {
     let first_line = request.lines().next()?;
     let path = first_line.split_whitespace().nth(1)?;
     let query = path.split_once('?')?.1;
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        (key == param).then(|| urldec(value))
-    })
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == param).then(|| value.into_owned()))
 }
 
-fn urldec(value: &str) -> String {
-    let mut output = Vec::with_capacity(value.len());
-    let bytes = value.as_bytes();
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
-                output.push(byte);
-                index += 3;
-                continue;
-            }
-        }
-        output.push(if bytes[index] == b'+' { b' ' } else { bytes[index] });
-        index += 1;
+fn authorization_callback(request: &str, expected_state: &str) -> Result<Option<String>, String> {
+    let mut first_line = request
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace();
+    if first_line.next() != Some("GET")
+        || !first_line.next().is_some_and(|path| path.starts_with("/?"))
+    {
+        return Ok(None);
     }
-    String::from_utf8_lossy(&output).into_owned()
+    // Even an OAuth error must belong to this flow. Unrelated requests such as a
+    // favicon or a forged error cannot cancel a legitimate pending sign-in.
+    if extract_query_param(request, "state").as_deref() != Some(expected_state) {
+        return Ok(None);
+    }
+    if let Some(error) = extract_query_param(request, "error") {
+        return Err(format!("Google OAuth failed: {error}"));
+    }
+    Ok(extract_query_param(request, "code").filter(|code| !code.trim().is_empty()))
 }
 
 #[cfg(test)]
@@ -376,12 +418,21 @@ mod tests {
     #[test]
     fn creates_rfc_7636_s256_challenge() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
-        assert_eq!(pkce_challenge(verifier), "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+        assert_eq!(
+            pkce_challenge(verifier),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
     }
 
     #[test]
     fn authorization_url_contains_state_and_pkce() {
-        let url = authorization_url("client", "scope", "http://127.0.0.1:1234", "state", "challenge");
+        let url = authorization_url(
+            "client",
+            "scope",
+            "http://127.0.0.1:1234",
+            "state",
+            "challenge",
+        );
         assert!(url.contains("state=state"));
         assert!(url.contains("code_challenge=challenge"));
         assert!(url.contains("code_challenge_method=S256"));
@@ -391,7 +442,39 @@ mod tests {
     #[test]
     fn extracts_and_decodes_query_parameters() {
         let request = "GET /?code=hello%20world&state=a%2Bb HTTP/1.1\r\nHost: 127.0.0.1\r\n";
-        assert_eq!(extract_query_param(request, "code").as_deref(), Some("hello world"));
-        assert_eq!(extract_query_param(request, "state").as_deref(), Some("a+b"));
+        assert_eq!(
+            extract_query_param(request, "code").as_deref(),
+            Some("hello world")
+        );
+        assert_eq!(
+            extract_query_param(request, "state").as_deref(),
+            Some("a+b")
+        );
+    }
+
+    #[test]
+    fn oauth_errors_require_the_current_state_and_unicode_queries_do_not_panic() {
+        assert_eq!(
+            authorization_callback("GET /?error=access_denied&state=wrong HTTP/1.1", "current")
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            authorization_callback("GET /?code=valid&state=current HTTP/1.1", "current").unwrap(),
+            Some("valid".into())
+        );
+        assert!(authorization_callback(
+            "GET /?error=access_denied&state=current HTTP/1.1",
+            "current"
+        )
+        .is_err());
+        assert_eq!(
+            authorization_callback("POST /?code=valid&state=current HTTP/1.1", "current").unwrap(),
+            None
+        );
+        assert_eq!(
+            extract_query_param("GET /?code=%é&state=current HTTP/1.1", "code").as_deref(),
+            Some("%é")
+        );
     }
 }

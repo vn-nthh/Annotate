@@ -586,7 +586,8 @@ body::before {
   transition: opacity 0.2s;
 }
 
-.history-item:hover .history-item-actions {
+.history-item:hover .history-item-actions,
+.history-item:focus-within .history-item-actions {
   opacity: 1;
 }
 
@@ -771,7 +772,8 @@ body::before {
   letter-spacing: 0.04em;
 }
 
-.dict-item:hover .dict-item-remove {
+.dict-item:hover .dict-item-remove,
+.dict-item:focus-within .dict-item-remove {
   opacity: 1;
 }
 
@@ -1856,4 +1858,453 @@ body::before {
 
 [data-theme="dark"] .sub-new-btn:hover {
   border-color: var(--ink-faint);
+}
+
+/* ============================================
+   Setup Guide (first run, resumable)
+   ============================================ */
+.setup-resume-btn {
+  width: 100%;
+  margin-bottom: 4px;
+}
+
+.setup-guide-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setup-guide-desc {
+  font-size: 0.82rem;
+  color: var(--ink-light);
+  white-space: nowrap;
+}
+
+.onboarding {
+  display: none;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  padding: 18px 24px 16px;
+  background: var(--paper);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.app.onboarding-open {
+  background: var(--sidebar-bg);
+}
+
+.app.onboarding-open .app-body {
+  display: none;
+}
+
+.app.onboarding-open .onboarding {
+  display: flex;
+}
+
+.ob-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ob-count {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-light);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.ob-exit {
+  border: none;
+  background: none;
+  font-family: var(--font-main);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  cursor: pointer;
+  padding: 4px 8px;
+  margin-right: -8px;
+  border-radius: var(--radius-sm);
+}
+
+.ob-rail {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 20px;
+}
+
+.ob-seg {
+  flex: 1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+}
+
+.ob-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.ob-step,
+.ob-install {
+  display: none;
+  flex-direction: column;
+}
+
+.ob-step.active,
+.ob-install.active {
+  display: flex;
+}
+
+.ob-title {
+  font-family: var(--font-main);
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin-bottom: 6px;
+}
+
+.ob-desc {
+  font-size: 0.82rem;
+  color: var(--ink-light);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+/* Step 1: engine cards */
+.ob-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ob-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 12px 44px 12px 14px;
+  text-align: left;
+  font-family: var(--font-main);
+  background: var(--paper-warm);
+  border: 1.5px solid var(--rule);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+}
+
+.ob-card.selected {
+  background: var(--paper-hover);
+  border-color: var(--ink);
+}
+
+.ob-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ob-card-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ob-card-tag {
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.ob-card-desc {
+  font-size: 0.78rem;
+  color: var(--ink-light);
+  line-height: 1.45;
+}
+
+.ob-check {
+  display: none;
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ink);
+}
+
+.ob-card.selected .ob-check {
+  display: block;
+}
+
+/* Step 2: keys and model */
+.ob-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 14px;
+}
+
+.ob-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 0.82rem;
+  color: var(--ink-light);
+  line-height: 1.5;
+}
+
+.ob-num {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--ink);
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: 50%;
+}
+
+.ob-link-btn {
+  align-self: flex-start;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-family: var(--font-main);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-warm);
+  border: 1.5px solid var(--rule);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ob-field {
+  padding-top: 16px;
+}
+
+.ob-field-first {
+  padding-top: 0;
+}
+
+.ob-model {
+  padding: 14px;
+  background: var(--paper-warm);
+  border: 1.5px solid var(--rule);
+  border-radius: var(--radius-lg);
+}
+
+.ob-model-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ob-model-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ob-model-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ob-model-status {
+  font-size: 0.78rem;
+  color: var(--ink-light);
+  white-space: nowrap;
+}
+
+.ob-model-btn {
+  width: 96px;
+  padding: 8px 0;
+  text-align: center;
+}
+
+.ob-progress {
+  height: 6px;
+  margin-top: 12px;
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ob-progress-fill {
+  width: 40%;
+  height: 100%;
+  background: var(--ink);
+  border-radius: 3px;
+}
+
+.ob-progress-text {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* Step 4: hotkey suggestions */
+.ob-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.ob-chips-label {
+  margin-right: 2px;
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+}
+
+.ob-chip,
+.ob-feature-btn {
+  padding: 4px 10px;
+  font-family: var(--font-main);
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--ink-light);
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+/* Step 5: try it */
+.ob-try-hotkey-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.ob-try-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--ink-light);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ob-kbd {
+  padding: 3px 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.input-wrap .ob-try-input {
+  padding-right: 14px;
+}
+
+.ob-try-status {
+  margin-top: 10px;
+  font-size: 0.8rem;
+  color: var(--ink-light);
+  white-space: nowrap;
+}
+
+/* Step 6: features */
+.ob-features {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ob-feature {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px 9px 14px;
+  background: var(--paper-warm);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+
+.ob-feature-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.ob-feature-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.ob-feature-desc {
+  font-size: 0.74rem;
+  color: var(--ink-light);
+  line-height: 1.4;
+}
+
+/* Footer */
+.ob-foot-rule {
+  height: 1px;
+  margin-bottom: 12px;
+  background: var(--rule);
+}
+
+.ob-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ob-hint {
+  flex: 1;
+  text-align: right;
+  font-size: 0.76rem;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+.ob-btn {
+  padding: 9px 18px;
+  font-family: var(--font-main);
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+
+.ob-btn-secondary {
+  color: var(--ink);
+  background: var(--paper-warm);
+  border: 1.5px solid var(--rule);
+}
+
+.ob-btn-primary {
+  color: var(--paper);
+  background: var(--ink);
+  border: none;
 }

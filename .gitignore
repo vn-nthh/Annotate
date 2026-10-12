@@ -4,6 +4,11 @@ node_modules/
 # Rust build artifacts
 src-tauri/target/
 src-tauri/binaries/*.exe
+dist/
+
+# Fontshare originals are fetched directly, then embedded in the application.
+src-tauri/assets/fonts/*.ttf
+src-tauri/assets/fonts/*.otf
 
 # Large model files
 scripts/gector-onnx/
@@ -19,6 +24,9 @@ scripts/gector-onnx/
 # Dev documentation (except README)
 *.md
 !README.md
+!AGENTS.md
+!src-tauri/assets/fonts/README.md
+!docs/native-validation.md
 
 # OAuth credentials (never commit secrets)
 oauth.config.json

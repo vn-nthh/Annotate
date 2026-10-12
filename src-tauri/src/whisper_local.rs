@@ -1,15 +1,17 @@
 //! Local whisper transcription via a child worker process.
 //!
-//! The actual whisper.cpp GPU code lives in separate sidecar binaries:
-//! - `whisper-worker` — CUDA backend
-//! - `whisper-worker-vulkan` — Vulkan backend
+//! The whisper.cpp GPU code lives in the Vulkan worker executable.
 //!
 //! This module spawns the selected process on-demand and communicates via
 //! stdin/stdout JSON. When unloaded, the process is killed and ALL GPU memory
 //! is freed by the OS.
 
+use crate::download::{CancelToken, DownloadSlot};
 use std::path::PathBuf;
-use std::sync::LazyLock;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    LazyLock,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex;
@@ -28,28 +30,23 @@ const MODEL_VERIFIED_MARKER: &str = "ggml-large-v3-turbo-q5_0.bin.verified";
 /// GPU acceleration backend for local Whisper inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccelerationBackend {
-    Cuda,
     Vulkan,
 }
 
 impl AccelerationBackend {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Cuda => "cuda",
             Self::Vulkan => "vulkan",
         }
     }
 
     pub fn parse(value: Option<&str>) -> Self {
-        match value.map(str::trim).unwrap_or("cuda") {
-            "vulkan" | "vk" => Self::Vulkan,
-            _ => Self::Cuda,
-        }
+        let _ = value; // Includes older persisted acceleration selections.
+        Self::Vulkan
     }
 
     fn worker_bin_stem(self) -> &'static str {
         match self {
-            Self::Cuda => "whisper-worker",
             Self::Vulkan => "whisper-worker-vulkan",
         }
     }
@@ -62,17 +59,54 @@ struct WorkerProcess {
     stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
     backend: AccelerationBackend,
+    #[cfg(windows)]
+    _job: WorkerJob,
+}
+
+/// The OS closes this handle on app exit, including crashes and active inference.
+#[cfg(windows)]
+struct WorkerJob(usize);
+
+#[cfg(windows)]
+impl WorkerJob {
+    fn attach(child: &Child) -> Result<Self, String> {
+        use windows::Win32::{Foundation::HANDLE, System::JobObjects::*};
+        unsafe {
+            let handle = CreateJobObjectW(None, None).map_err(|e| e.to_string())?;
+            let job = Self(handle.0 as usize);
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &limits as *const _ as *const _,
+                std::mem::size_of_val(&limits) as u32,
+            )
+            .map_err(|e| format!("Could not protect the Whisper worker: {e}"))?;
+            let process = child.raw_handle().ok_or("Whisper worker already exited")?;
+            AssignProcessToJobObject(handle, HANDLE(process)).map_err(|e| {
+                format!("Could not assign the Whisper worker to its process job: {e}")
+            })?;
+            Ok(job)
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WorkerJob {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(
+                self.0 as *mut _,
+            ));
+        }
+    }
 }
 
 static WORKER: LazyLock<Mutex<Option<WorkerProcess>>> = LazyLock::new(|| Mutex::new(None));
 
 /// Flag tracking whether the model is loaded in the worker.
-static MODEL_LOADED: LazyLock<std::sync::Mutex<bool>> =
-    LazyLock::new(|| std::sync::Mutex::new(false));
-
-/// Backend currently loaded (if any).
-static LOADED_BACKEND: LazyLock<std::sync::Mutex<Option<AccelerationBackend>>> =
-    LazyLock::new(|| std::sync::Mutex::new(None));
+static MODEL_LOADED: AtomicBool = AtomicBool::new(false);
 
 // ── Path Helpers ──────────────────────────────────────
 
@@ -122,32 +156,45 @@ pub fn is_model_downloaded(data_dir: &std::path::Path) -> bool {
 
 /// Check if the worker is currently running and model loaded.
 pub fn is_loaded() -> bool {
-    MODEL_LOADED.lock().ok().map_or(false, |g| *g)
+    MODEL_LOADED.load(Ordering::Acquire)
 }
 
-/// Backend the running worker was started with, if loaded.
-pub fn loaded_backend() -> Option<AccelerationBackend> {
-    LOADED_BACKEND.lock().ok().and_then(|g| *g)
+/// Only one model download may run at a time; pausing cancels it.
+pub static MODEL_DOWNLOAD: DownloadSlot = DownloadSlot::new();
+
+/// Exact size of the published model, for progress before a download starts.
+pub fn model_size_bytes() -> u64 {
+    MODEL_SIZE_BYTES
 }
 
-/// Download the model file.
+/// Bytes kept from a paused or interrupted model download.
+pub fn partial_model_bytes(data_dir: &std::path::Path) -> u64 {
+    crate::download::partial_bytes(&model_path(data_dir))
+}
+
+/// Download the model file, resuming a previous partial download if present.
 pub async fn download_model(
     data_dir: &std::path::Path,
     progress_cb: impl Fn(u64, u64) + Send + 'static,
+    cancel: &CancelToken,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let dest = model_path(data_dir);
     log::info!("[WhisperLocal] Downloading model to {:?}", dest);
 
+    // No overall timeout: a paused and resumed download can span a long time.
+    // A stalled connection fails on the read timeout and keeps its partial file.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60))
         .build()?;
 
-    let downloaded = crate::download::download_verified(
+    let downloaded = crate::download::download_verified_resumable(
         &client,
         MODEL_URL,
         &dest,
         MODEL_SHA256,
         progress_cb,
+        cancel,
     )
     .await?;
 
@@ -172,67 +219,41 @@ fn worker_exe_path(backend: AccelerationBackend) -> PathBuf {
 }
 
 fn clear_loaded_flags() {
-    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-        *loaded = false;
-    }
-    if let Ok(mut backend) = LOADED_BACKEND.lock() {
-        *backend = None;
-    }
+    MODEL_LOADED.store(false, Ordering::Release);
 }
 
-fn mark_loaded(backend: AccelerationBackend) {
-    if let Ok(mut loaded) = MODEL_LOADED.lock() {
-        *loaded = true;
-    }
-    if let Ok(mut current) = LOADED_BACKEND.lock() {
-        *current = Some(backend);
-    }
+fn mark_loaded() {
+    MODEL_LOADED.store(true, Ordering::Release);
 }
 
 /// Spawn the worker process for `backend` and load the model.
-///
-/// If a worker is already running for a different backend, it is unloaded first.
 pub async fn ensure_loaded(
     data_dir: &std::path::Path,
     backend: AccelerationBackend,
 ) -> Result<(), String> {
-    // If we already have a running worker for this backend, keep using it.
-    // If it exited/crashed or was started with a different backend, clear and respawn.
-    {
-        let mut guard = WORKER.lock().await;
-        if let Some(worker) = guard.as_mut() {
-            let same_backend = worker.backend == backend;
-            match worker.child.try_wait() {
-                Ok(None) if same_backend => {
-                    mark_loaded(backend);
-                    return Ok(());
-                }
-                Ok(None) => {
-                    log::info!(
-                        "[WhisperLocal] Switching worker backend {} → {}",
-                        worker.backend.as_str(),
-                        backend.as_str()
-                    );
-                    // Drop the lock before unload() which also needs it.
-                    drop(guard);
-                    unload().await;
-                }
-                Ok(Some(status)) => {
-                    log::warn!(
-                        "[WhisperLocal] Existing worker exited ({:?}); respawning",
-                        status
-                    );
-                    *guard = None;
-                    clear_loaded_flags();
-                }
-                Err(err) => {
-                    log::warn!(
-                        "[WhisperLocal] Failed to query worker state ({}); respawning",
-                        err
-                    );
-                    *guard = None;
-                    clear_loaded_flags();
-                }
+    // Hold the same lock through startup so simultaneous requests share one model.
+    let mut guard = WORKER.lock().await;
+    if let Some(worker) = guard.as_mut() {
+        match worker.child.try_wait() {
+            Ok(None) => {
+                mark_loaded();
+                return Ok(());
+            }
+            Ok(Some(status)) => {
+                log::warn!(
+                    "[WhisperLocal] Existing worker exited ({:?}); respawning",
+                    status
+                );
+                *guard = None;
+                clear_loaded_flags();
+            }
+            Err(err) => {
+                log::warn!(
+                    "[WhisperLocal] Failed to query worker state ({}); respawning",
+                    err
+                );
+                *guard = None;
+                clear_loaded_flags();
             }
         }
     }
@@ -242,7 +263,7 @@ pub async fn ensure_loaded(
     let worker_path = worker_exe_path(backend);
     if !worker_path.exists() {
         return Err(format!(
-            "Whisper {} worker not found at: {}. Rebuild with the matching backend feature.",
+            "Whisper {} worker not found at: {}. Run scripts/build-native.ps1.",
             backend.as_str(),
             worker_path.display()
         ));
@@ -263,10 +284,10 @@ pub async fn ensure_loaded(
     let mut cmd = tokio::process::Command::new(&worker_path);
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::inherit()); // worker logs go to our stderr
+        .stderr(std::process::Stdio::inherit())
+        .kill_on_drop(true);
 
-    // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS — keep the heavy Vulkan/CUDA
-    // model load from starving the UI / WebView2 compositor during startup.
+    // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS keeps loading below UI work.
     #[cfg(windows)]
     cmd.creation_flags(0x0800_0000 | 0x0000_4000);
 
@@ -278,6 +299,9 @@ pub async fn ensure_loaded(
         )
     })?;
 
+    #[cfg(windows)]
+    let job = WorkerJob::attach(&child)?;
+
     let stdin = child.stdin.take().ok_or("No stdin for worker")?;
     let stdout = child.stdout.take().ok_or("No stdout for worker")?;
     let stdout_reader = BufReader::new(stdout);
@@ -287,6 +311,8 @@ pub async fn ensure_loaded(
         stdin,
         stdout_reader,
         backend,
+        #[cfg(windows)]
+        _job: job,
     };
 
     // Send load command
@@ -311,8 +337,8 @@ pub async fn ensure_loaded(
         start.elapsed().as_secs_f64()
     );
 
-    *WORKER.lock().await = Some(worker);
-    mark_loaded(backend);
+    *guard = Some(worker);
+    mark_loaded();
 
     Ok(())
 }
@@ -344,6 +370,7 @@ pub async fn unload() {
 pub async fn transcribe_pcm_b64(
     audio_b64: &str,
     initial_prompt: Option<&str>,
+    language: Option<&str>,
 ) -> Result<String, String> {
     let mut guard = WORKER.lock().await;
     let worker = guard.as_mut().ok_or("Whisper worker not running")?;
@@ -351,10 +378,17 @@ pub async fn transcribe_pcm_b64(
     let cmd = serde_json::json!({
         "cmd": "transcribe",
         "audio_b64": audio_b64,
-        "prompt": initial_prompt.unwrap_or("")
+        "prompt": initial_prompt.unwrap_or(""),
+        "language": language
     });
 
-    let resp = send_command(worker, &cmd).await?;
+    let resp = match send_command(worker, &cmd).await {
+        Ok(response) => response,
+        Err(error) => {
+            *guard = None;
+            return Err(error);
+        }
+    };
 
     if resp["ok"].as_bool() != Some(true) {
         let err = resp["error"].as_str().unwrap_or("Unknown error");
@@ -381,7 +415,13 @@ pub async fn transcribe_segments_b64(
         "language": language
     });
 
-    let resp = send_command(worker, &cmd).await?;
+    let resp = match send_command(worker, &cmd).await {
+        Ok(response) => response,
+        Err(error) => {
+            *guard = None;
+            return Err(error);
+        }
+    };
 
     if resp["ok"].as_bool() != Some(true) {
         let err = resp["error"].as_str().unwrap_or("Unknown error");
@@ -395,36 +435,40 @@ pub async fn transcribe_segments_b64(
     Ok(segments)
 }
 
-
 // ── IPC Helpers ────────────────────────────────────────
 
 async fn send_command(
     worker: &mut WorkerProcess,
     cmd: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
-    let mut msg = serde_json::to_string(cmd).map_err(|e| e.to_string())?;
-    msg.push('\n');
-
-    worker
-        .stdin
-        .write_all(msg.as_bytes())
-        .await
-        .map_err(|e| format!("Failed to write to worker: {}", e))?;
-    worker
-        .stdin
-        .flush()
-        .await
-        .map_err(|e| format!("Failed to flush worker stdin: {}", e))?;
-
-    let mut response_line = String::new();
-    worker
-        .stdout_reader
-        .read_line(&mut response_line)
-        .await
-        .map_err(|e| format!("Failed to read from worker: {}", e))?;
-
-    serde_json::from_str(&response_line)
-        .map_err(|e| format!("Invalid response from worker: {} (raw: {})", e, response_line))
+    let result = async {
+        let mut msg = serde_json::to_string(cmd).map_err(|e| e.to_string())?;
+        msg.push('\n');
+        worker
+            .stdin
+            .write_all(msg.as_bytes())
+            .await
+            .map_err(|e| format!("Failed to write to worker: {e}"))?;
+        worker
+            .stdin
+            .flush()
+            .await
+            .map_err(|e| format!("Failed to flush worker stdin: {e}"))?;
+        let mut response_line = String::new();
+        worker
+            .stdout_reader
+            .read_line(&mut response_line)
+            .await
+            .map_err(|e| format!("Failed to read from worker: {e}"))?;
+        serde_json::from_str(&response_line)
+            .map_err(|e| format!("Invalid response from worker: {e}"))
+    }
+    .await;
+    if result.is_err() {
+        clear_loaded_flags();
+        let _ = worker.child.kill().await;
+    }
+    result
 }
 
 async fn send_command_no_response(
@@ -448,271 +492,6 @@ async fn send_command_no_response(
     Ok(())
 }
 
-// ── CUDA Runtime DLL Management ────────────────────────
-
-/// Base DLL names — the `{VER}` placeholder is replaced with the CUDA major version (e.g. 12, 13).
-const CUDA_DLL_TEMPLATES: &[&str] = &["cublas64_{VER}.dll", "cublasLt64_{VER}.dll", "cudart64_{VER}.dll"];
-
-/// NVIDIA redistribution package URLs (CUDA 12.6 — used as fallback download)
-const CUDART_REDIST_URL: &str =
-    "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.6.77-archive.zip";
-const CUDART_REDIST_SHA256: &str =
-    "7a313bc0c93b1a50bb03aa9783a199ae70c3b66e2d8084da65e8254a8577b925";
-const CUBLAS_REDIST_URL: &str =
-    "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/windows-x86_64/libcublas-windows-x86_64-12.6.4.1-archive.zip";
-const CUBLAS_REDIST_SHA256: &str =
-    "1a87ec80f8c0e5a39badc87010d479930c5b63abd788b3a05bd688a5980a3d07";
-
-/// Return the directory where the executable lives.
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .unwrap_or_else(|_| PathBuf::from("."))
-        .parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf()
-}
-
-/// Detect the CUDA major version from the CUDA_PATH environment variable.
-fn detect_cuda_major_version() -> Option<u32> {
-    let cuda_path = std::env::var("CUDA_PATH").ok()?;
-    let path = PathBuf::from(&cuda_path);
-
-    if let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) {
-        let version_str = dir_name.strip_prefix('v').unwrap_or(dir_name);
-        if let Some(major_str) = version_str.split('.').next() {
-            if let Ok(major) = major_str.parse::<u32>() {
-                return Some(major);
-            }
-        }
-    }
-
-    for sub in &["bin", "bin/x64"] {
-        let search_dir = path.join(sub);
-        if let Ok(entries) = std::fs::read_dir(&search_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("cublas64_") && name.ends_with(".dll") {
-                    let ver_part = name
-                        .strip_prefix("cublas64_")
-                        .and_then(|s| s.strip_suffix(".dll"));
-                    if let Some(ver) = ver_part.and_then(|v| v.parse::<u32>().ok()) {
-                        return Some(ver);
-                    }
-                }
-            }
-        }
-    }
-
-    None
-}
-
-/// Get the concrete DLL filenames for the detected CUDA version.
-fn cuda_dll_names() -> Vec<String> {
-    let ver = detect_cuda_major_version().unwrap_or(12);
-    CUDA_DLL_TEMPLATES
-        .iter()
-        .map(|tpl| tpl.replace("{VER}", &ver.to_string()))
-        .collect()
-}
-
-/// Check which CUDA DLLs are missing.
-pub fn missing_cuda_dlls() -> Vec<String> {
-    let dlls = cuda_dll_names();
-    let exe = exe_dir();
-    let cuda_path = std::env::var("CUDA_PATH").ok().map(PathBuf::from);
-    let cuda_bin = cuda_path.as_ref().map(|p| p.join("bin"));
-    let cuda_bin_x64 = cuda_path.as_ref().map(|p| p.join("bin").join("x64"));
-
-    dlls.into_iter()
-        .filter(|dll| {
-            let in_exe_dir = exe.join(dll).exists();
-            let in_cuda_bin = cuda_bin.as_ref().map(|b| b.join(dll).exists()).unwrap_or(false);
-            let in_cuda_bin_x64 = cuda_bin_x64.as_ref().map(|b| b.join(dll).exists()).unwrap_or(false);
-            !in_exe_dir && !in_cuda_bin && !in_cuda_bin_x64
-        })
-        .collect()
-}
-
-/// Check whether all CUDA DLLs are available.
-pub fn are_cuda_dlls_available() -> bool {
-    missing_cuda_dlls().is_empty()
-}
-
-/// Try to copy CUDA DLLs from installed CUDA Toolkit.
-pub fn copy_cuda_from_toolkit() -> Result<usize, String> {
-    let cuda_path = std::env::var("CUDA_PATH")
-        .map_err(|_| "CUDA_PATH environment variable not set".to_string())?;
-
-    let cuda_bin = PathBuf::from(&cuda_path).join("bin");
-    let cuda_bin_x64 = cuda_bin.join("x64");
-
-    if !cuda_bin.exists() {
-        return Err(format!("CUDA bin directory not found: {}", cuda_bin.display()));
-    }
-
-    let dest_dir = exe_dir();
-    let mut copied = 0;
-
-    for dll in cuda_dll_names() {
-        let dst = dest_dir.join(&dll);
-
-        if dst.exists() {
-            copied += 1;
-            continue;
-        }
-
-        let src = if cuda_bin.join(&dll).exists() {
-            cuda_bin.join(&dll)
-        } else if cuda_bin_x64.join(&dll).exists() {
-            cuda_bin_x64.join(&dll)
-        } else {
-            log::warn!("[CUDA] {} not found in CUDA Toolkit", dll);
-            continue;
-        };
-
-        std::fs::copy(&src, &dst)
-            .map_err(|e| format!("Failed to copy {}: {}", dll, e))?;
-        log::info!("[CUDA] Copied {} from {}", dll, src.display());
-        copied += 1;
-    }
-
-    Ok(copied)
-}
-
-/// Download CUDA runtime DLLs from NVIDIA's official CDN.
-pub async fn download_cuda_runtime(
-    progress_cb: impl Fn(u64, u64) + Send + 'static,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let dest_dir = exe_dir();
-
-    let missing = missing_cuda_dlls();
-    if missing.is_empty() {
-        log::info!("[CUDA] All DLLs already present");
-        return Ok(());
-    }
-
-    log::info!("[CUDA] Missing DLLs: {:?} — downloading from NVIDIA", missing);
-
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
-        .build()?;
-
-    let need_cudart = missing.iter().any(|d| d.contains("cudart"));
-    let need_cublas = missing.iter().any(|d| d.contains("cublas"));
-
-    let total_estimate: u64 = if need_cudart && need_cublas {
-        370_000_000
-    } else if need_cublas {
-        365_000_000
-    } else {
-        5_000_000
-    };
-
-    let mut total_downloaded: u64 = 0;
-
-    if need_cudart {
-        log::info!("[CUDA] Downloading cudart package...");
-        total_downloaded = download_and_extract_dll_package(
-            &client,
-            CUDART_REDIST_URL,
-            CUDART_REDIST_SHA256,
-            "_cuda_cudart.zip",
-            &dest_dir,
-            &missing,
-            &progress_cb,
-            total_downloaded,
-            total_estimate,
-        )
-        .await?;
-    }
-
-    if need_cublas {
-        log::info!("[CUDA] Downloading cublas package...");
-        total_downloaded = download_and_extract_dll_package(
-            &client,
-            CUBLAS_REDIST_URL,
-            CUBLAS_REDIST_SHA256,
-            "_cuda_cublas.zip",
-            &dest_dir,
-            &missing,
-            &progress_cb,
-            total_downloaded,
-            total_estimate,
-        )
-        .await?;
-    }
-
-    progress_cb(total_downloaded, total_downloaded);
-
-    let still_missing = missing_cuda_dlls();
-    if !still_missing.is_empty() {
-        return Err(format!(
-            "Some CUDA DLLs could not be obtained: {:?}",
-            still_missing
-        )
-        .into());
-    }
-
-    log::info!("[CUDA] All runtime DLLs provisioned successfully");
-    Ok(())
-}
-
-/// Download a zip archive and extract matching DLLs from it.
-async fn download_and_extract_dll_package(
-    client: &reqwest::Client,
-    url: &str,
-    expected_sha256: &str,
-    archive_name: &str,
-    dest_dir: &std::path::Path,
-    needed_dlls: &[String],
-    progress_cb: &(impl Fn(u64, u64) + Send),
-    mut downloaded_so_far: u64,
-    total_estimate: u64,
-) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-    let archive_path = dest_dir.join(archive_name);
-    let previous_downloaded = downloaded_so_far;
-    let archive_bytes = crate::download::download_verified(
-        client,
-        url,
-        &archive_path,
-        expected_sha256,
-        |current, _| progress_cb(previous_downloaded + current, total_estimate),
-    )
-    .await?;
-    downloaded_so_far += archive_bytes;
-
-    let extract_result = (|| -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let zip_file = std::fs::File::open(&archive_path)?;
-        let mut archive = zip::ZipArchive::new(zip_file)?;
-        for index in 0..archive.len() {
-            let mut entry = archive.by_index(index)?;
-            let Some(filename) = entry.name().rsplit('/').next().map(str::to_owned) else {
-                continue;
-            };
-            if !needed_dlls.iter().any(|dll| dll == &filename) {
-                continue;
-            }
-
-            let output = dest_dir.join(&filename);
-            let partial = dest_dir.join(format!("{filename}.part"));
-            let _ = std::fs::remove_file(&partial);
-            let mut output_file = std::fs::File::create(&partial)?;
-            std::io::copy(&mut entry, &mut output_file)?;
-            output_file.sync_all()?;
-            drop(output_file);
-            if output.exists() {
-                std::fs::remove_file(&output)?;
-            }
-            std::fs::rename(&partial, &output)?;
-            log::info!("[CUDA] Extracted verified {filename}");
-        }
-        Ok(())
-    })();
-    let _ = std::fs::remove_file(&archive_path);
-    extract_result?;
-    Ok(downloaded_so_far)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -732,36 +511,94 @@ mod tests {
         );
         assert_eq!(
             AccelerationBackend::parse(Some("cuda")),
-            AccelerationBackend::Cuda
+            AccelerationBackend::Vulkan
         );
         assert_eq!(
             AccelerationBackend::parse(None),
-            AccelerationBackend::Cuda
+            AccelerationBackend::Vulkan
         );
         assert_eq!(
             AccelerationBackend::parse(Some("unknown")),
-            AccelerationBackend::Cuda
+            AccelerationBackend::Vulkan
         );
     }
 
     #[test]
     fn worker_stems_match_external_bin_names() {
         assert_eq!(
-            AccelerationBackend::Cuda.worker_bin_stem(),
-            "whisper-worker"
-        );
-        assert_eq!(
             AccelerationBackend::Vulkan.worker_bin_stem(),
             "whisper-worker-vulkan"
         );
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn closing_the_worker_job_terminates_a_busy_child() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut child = tokio::process::Command::new("ping.exe")
+                .args(["-n", "60", "127.0.0.1"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .unwrap();
+            let job = super::WorkerJob::attach(&child).unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert!(child.try_wait().unwrap().is_none());
+            drop(job);
+            tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
+                .await
+                .expect("worker survived its job")
+                .unwrap();
+        });
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_crashed_worker_clears_the_loaded_status() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let mut child = tokio::process::Command::new("ping.exe")
+                .args(["-n", "60", "127.0.0.1"])
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .kill_on_drop(true)
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .unwrap();
+            let job = super::WorkerJob::attach(&child).unwrap();
+            let stdin = child.stdin.take().unwrap();
+            let stdout_reader = tokio::io::BufReader::new(child.stdout.take().unwrap());
+            child.kill().await.unwrap();
+            let mut worker = super::WorkerProcess {
+                child,
+                stdin,
+                stdout_reader,
+                backend: AccelerationBackend::Vulkan,
+                _job: job,
+            };
+            super::mark_loaded();
+            assert!(
+                super::send_command(&mut worker, &serde_json::json!({"cmd":"backend"}))
+                    .await
+                    .is_err()
+            );
+            assert!(!super::is_loaded());
+        });
+    }
+
     #[test]
     fn model_presence_uses_size_and_marker_not_full_hash() {
-        let dir = std::env::temp_dir().join(format!(
-            "annotate-whisper-presence-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("annotate-whisper-presence-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
 
