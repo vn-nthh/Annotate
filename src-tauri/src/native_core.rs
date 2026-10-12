@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, OnceLock,
     },
 };
@@ -117,6 +117,9 @@ pub struct Core {
     sync_generation: AtomicU64,
     status_generation: AtomicU64,
     whisper_operation: tokio::sync::Mutex<()>,
+    migration: tokio::sync::Mutex<()>,
+    // One clipboard capture/restore at a time, as in the browser build.
+    capturing_selection: AtomicBool,
 }
 
 pub fn initialize(app: AppHandle) -> Result<(), String> {
@@ -176,6 +179,8 @@ pub fn initialize(app: AppHandle) -> Result<(), String> {
         sync_generation: AtomicU64::new(0),
         status_generation: AtomicU64::new(0),
         whisper_operation: tokio::sync::Mutex::new(()),
+        migration: tokio::sync::Mutex::new(()),
+        capturing_selection: AtomicBool::new(false),
     });
     CORE.set(core.clone()).map_err(|_| "Already initialized")?;
     // The main native window paints before device discovery, credentials, or any
@@ -372,31 +377,42 @@ impl Core {
             Err(error) => self.status(&error.to_string(), true),
             _ => {}
         }
-        let migrated = self
-            .state
+        // A failed import is retried by every sync attempt, including Sync Now.
+        if let Err(error) = self.ensure_migrated().await {
+            self.status(&error, true);
+        }
+        self.sync.initialize().await;
+    }
+    fn migrated(&self) -> bool {
+        self.state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .data
             .data
-            .migrated;
-        if !migrated {
-            // A failed import leaves `migrated` unset so it is retried next launch,
-            // but it must not keep sync disabled for this session.
-            let imported = native_app::spawn_blocking(|| {
-                let (dictionary, history) =
-                    crate::native_migrate::read_legacy(&get().app.app_local_data_dir()?)?;
-                let mut state = get().state.lock().unwrap_or_else(|e| e.into_inner());
-                state.data.import(&dictionary, &history)
-            })
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|result| result);
-            match imported {
-                Ok(()) => crate::native_ui::refresh(),
-                Err(error) => self.status(&error, true),
-            }
+            .migrated
+    }
+    /// Imports the browser build's dictionary and history once. Sync waits for
+    /// this so remote data is never merged into a store missing local records.
+    pub async fn ensure_migrated(&self) -> Result<(), String> {
+        if self.migrated() {
+            return Ok(());
         }
-        self.sync.initialize().await;
+        let _migration = self.migration.lock().await;
+        if self.migrated() {
+            return Ok(());
+        }
+        native_app::spawn_blocking(|| {
+            let (dictionary, history) =
+                crate::native_migrate::read_legacy(&get().app.app_local_data_dir()?)?;
+            let mut state = get().state.lock().unwrap_or_else(|e| e.into_inner());
+            state.data.import(&dictionary, &history)
+        })
+        .await
+        .map_err(|e| e.to_string())
+        .and_then(|result| result)
+        .map_err(|error| format!("Cannot import previous data: {error}"))?;
+        crate::native_ui::refresh();
+        Ok(())
     }
     pub fn schedule_sync(&self) {
         let generation = self.sync_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -847,7 +863,19 @@ impl Core {
                 {
                     return;
                 }
+                // Overlapping captures would race on the clipboard sentinel and
+                // could restore the wrong clipboard contents.
+                if self.capturing_selection.swap(true, Ordering::AcqRel) {
+                    return;
+                }
                 native_app::spawn(async {
+                    struct Release;
+                    impl Drop for Release {
+                        fn drop(&mut self) {
+                            get().capturing_selection.store(false, Ordering::Release);
+                        }
+                    }
+                    let _release = Release;
                     let selected =
                         native_app::spawn_blocking(|| crate::capture_selected_text(Some(80))).await;
                     if get()

@@ -343,11 +343,31 @@ impl Sync {
         cancelled.as_mut().enable();
         {
             let session = self.session();
-            if session.check(generation).is_err() {
+            if session.check(generation).is_err()
+                || get()
+                    .state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .user
+                    .is_none()
+            {
                 return;
             }
-            let state = get().snapshot();
-            if state.user.is_none() || !state.data.data.migrated {
+        }
+        // Retry an import that failed at startup (e.g. a locked legacy profile)
+        // instead of leaving sync silently disabled until restart.
+        if let Err(error) = get().ensure_migrated().await {
+            if self.session().check(generation).is_ok() {
+                get().change(|s| {
+                    s.labels.insert("sync-now-text".into(), "Retry".into());
+                });
+                get().status(&error, true);
+            }
+            return;
+        }
+        {
+            let session = self.session();
+            if session.check(generation).is_err() {
                 return;
             }
             get().change(|s| {
