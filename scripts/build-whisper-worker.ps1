@@ -64,7 +64,11 @@ $startInfo.CreateNoWindow = $true
 $startInfo.RedirectStandardInput = $true
 $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
-$process = [Diagnostics.Process]::Start($startInfo)
+# Windows PowerShell's redirected stdin uses the console input encoding, which
+# can add a UTF-8 BOM that makes the worker reject the first JSON command.
+$inputEncoding = [Console]::InputEncoding
+[Console]::InputEncoding = New-Object Text.UTF8Encoding $false
+try { $process = [Diagnostics.Process]::Start($startInfo) } finally { [Console]::InputEncoding = $inputEncoding }
 try {
   $process.StandardInput.WriteLine('{"cmd":"backend"}')
   $process.StandardInput.WriteLine('{"cmd":"quit"}')
