@@ -3,7 +3,7 @@ members = ["crates/whisper-worker"]
 
 [package]
 name = "annotate"
-version = "0.2.1"
+version = "0.3.0"
 description = "Push-to-talk voice transcription"
 authors = ["you"]
 license = ""
