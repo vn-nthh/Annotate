@@ -17,6 +17,9 @@ Annotate pastes the transcription into the active application.
 - Optional on-device grammar cleanup using a GECtor ONNX model.
 - Subtitle generation from audio/video with VAD, and OpenRouter subtitle summaries.
 - Light/dark settings UI, native recording overlay, global hotkeys, and system tray.
+- A first-run setup guide for the engine, model or API key, microphone, and hotkey.
+  It can be exited at any step and resumed later from the sidebar or Settings.
+- The local model download can be paused and resumes where it stopped.
 - API keys and Google refresh tokens stored in Windows Credential Manager.
 
 The app uses Win32, Direct2D, DirectWrite, Windows Composition, and WASAPI. The
@@ -32,7 +35,8 @@ existing installation in place, keeping settings, dictionary, history and models
 If you installed an older release with the `.msi`, remove that entry from
 Settings > Apps afterwards. A portable ZIP is also available: extract the whole
 folder and run `annotate.exe`, keeping `DirectML.dll` and
-`whisper-worker-vulkan.exe` beside it. Models download from Settings on demand.
+`whisper-worker-vulkan.exe` beside it. On first launch, the setup guide helps you
+pick an engine and get its model or API key; models also download from Settings.
 
 Requirements are Windows 10/11 x64 and the
 [Microsoft Visual C++ 2015–2022 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).

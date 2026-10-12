@@ -101,3 +101,36 @@ reported Vulkan. Archive SHA-256:
 Live Groq/Azure/OpenRouter requests, Google sign-in/sync against a real account,
 and live microphone recording were not exercised. Their preserved backend
 flows and relevant deterministic behavior were checked in code and Rust tests.
+
+## Setup guide and resumable model download
+
+Validated on Windows 11 x64, 12 October 2026, for v0.3.0.
+
+New installs open a six-step setup guide: engine, model or API key, microphone,
+hotkey, a live "Try it" step, and a feature overview. Profiles with a saved
+hotkey, including upgrades from the Tauri build, skip it. Exiting keeps the step
+in `settings.json`; the sidebar and Settings offer to resume it. The engine only
+switches once it can transcribe. The local model download can be paused and
+resumes from its partial file with an HTTP range request, still verified by
+SHA-256; a stale partial restarts once.
+
+- All 47 Rust tests pass, including resumed, stale, range-ignoring, complete,
+  and stalled-then-cancelled downloads against a local HTTP server, and the
+  setup state rules.
+- `--capture-ui` renders 76 screen states and passes 31 interaction checks,
+  nine of them for the guide: first-run display, waiting for the model, download
+  progress, pause and resume, exiting and resuming at the same step, the engine
+  switch, hotkey gating, a successful try, finishing into a feature, and pausing
+  from Settings. The checks never save API keys, because those would reach the
+  live Credential Manager.
+- Home, Dictionary, Subtitles, and the close dialog remain pixel-identical to
+  the previous build in both themes. Settings differs only by its new Setup
+  Guide section and the resulting scrollbar thumb.
+- Reference scenes are now parsed when first shown instead of all at window
+  creation. With three runs each on a Ryzen 5 5600G, the median open-window
+  working set fell from 43.26 to 38.29 MiB (private 25.27 to 16.88 MiB), tray
+  from 32.27 to 31.83 MiB, and process start to rendered UI from 114 to 105 ms.
+
+Not exercised: a real Groq or Azure key in the guide, live microphone input in
+"Try it", and a full download from the model host. The host was confirmed to
+answer range requests with `206 Partial Content`.

@@ -24,6 +24,7 @@ scripts/gector-onnx/
 # Dev documentation (except README)
 *.md
 !README.md
+!AGENTS.md
 !src-tauri/assets/fonts/README.md
 !docs/native-validation.md
 
