@@ -1298,7 +1298,9 @@ impl Window {
             .iter()
             .find(|n| n.id == "whisper-status-text")
             .map_or(0.0, |n| n.rect[1]);
-        self.memory.scroll.insert("settings".into(), (row - 260.0).max(0.0));
+        self.memory
+            .scroll
+            .insert("settings".into(), (row - 260.0).max(0.0));
         self.update(true);
         if !self.controls.iter().any(|c| c.id == "whisper-pause-btn") {
             return Err("Settings offers no way to pause the model download".into());

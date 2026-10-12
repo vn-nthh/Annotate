@@ -592,7 +592,29 @@ fn instance_identity(directory: &std::path::Path) -> String {
     } else {
         std::env::current_dir().unwrap_or_default().join(directory)
     };
-    let resolved = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    // Resolve the nearest existing ancestor so the identity does not change
+    // once the data directory is created (8.3 short names, junctions).
+    let mut resolved = None;
+    let mut rest = vec![];
+    let mut current = absolute.as_path();
+    while resolved.is_none() {
+        resolved = std::fs::canonicalize(current).ok();
+        match (resolved.is_none(), current.parent(), current.file_name()) {
+            (true, Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                current = parent;
+            }
+            (true, _, _) => break,
+            _ => {}
+        }
+    }
+    let resolved = match resolved {
+        Some(mut base) => {
+            base.extend(rest.iter().rev());
+            base
+        }
+        None => absolute,
+    };
     let path = resolved.to_string_lossy();
     let path = if let Some(unc) = path.strip_prefix("\\\\?\\UNC\\") {
         format!("\\\\{unc}")
