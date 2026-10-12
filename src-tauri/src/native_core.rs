@@ -136,6 +136,7 @@ pub fn initialize(app: AppHandle) -> Result<(), String> {
         "azureMaiEndpoint",
         "liveLanguage",
         "subtitleLanguage",
+        crate::native_onboarding::KEY,
     ] {
         if let Some(value) = store.get(key) {
             settings.insert(key.into(), value);
@@ -149,9 +150,22 @@ pub fn initialize(app: AppHandle) -> Result<(), String> {
         .to_owned();
     settings.insert("transcriptionMode".into(), json!(mode));
     settings.insert("whisperAcceleration".into(), json!("vulkan"));
+    // A saved hotkey means the app was already set up (including by the Tauri
+    // build), so only new installs open the setup guide. Test and benchmark
+    // profiles are new too, but measure the app itself.
+    let onboarding = settings
+        .get(crate::native_onboarding::KEY)
+        .cloned()
+        .unwrap_or_else(|| {
+            let set_up =
+                settings.contains_key("hotkey") || std::env::var_os("ANNOTATE_UI_TEST").is_some();
+            crate::native_onboarding::Onboarding::initial(set_up, &mode).to_value()
+        });
+    settings.insert(crate::native_onboarding::KEY.into(), onboarding.clone());
     store.update_and_save(|values| {
         values.insert("transcriptionMode".into(), json!(mode));
         values.insert("whisperAcceleration".into(), json!("vulkan"));
+        values.insert(crate::native_onboarding::KEY.into(), onboarding);
     })?;
     let data = native_data::Store::open(&directory)?;
     let user = store.get("gd_user_info").filter(|v| !v.is_null());
@@ -310,7 +324,14 @@ impl Core {
             // engine settings instead of failing silently on the first hotkey.
             let needs_setup = {
                 let state = core.state.lock().unwrap_or_else(|e| e.into_inner());
+                let setup_open = crate::native_onboarding::Onboarding::from_value(
+                    state.settings.get(crate::native_onboarding::KEY),
+                    &state.mode(),
+                )
+                .is_open();
                 match state.mode().as_str() {
+                    // The setup guide is already showing and asks for the key.
+                    _ if setup_open => false,
                     "local" => false,
                     "azure-mai" => {
                         state.label("azure-key", "").trim().is_empty()
@@ -323,6 +344,7 @@ impl Core {
                 crate::native_ui::show_settings();
                 core.status("Add an API key", true);
             }
+            core.update_partial_download();
             for (key, check) in [
                 ("whisper", crate::check_whisper_model(app.clone())),
                 ("gec", crate::check_gec_model(app.clone())),
@@ -580,6 +602,19 @@ impl Core {
                 s.summary.clear();
                 s.progress.remove("sub");
             }),
+            "whisper-pause-btn" => {
+                crate::cancel_whisper_model_download();
+            }
+            "ob-open-groq" | "ob-open-azure" => {
+                let url = if id == "ob-open-groq" {
+                    "https://console.groq.com/keys"
+                } else {
+                    "https://ai.azure.com/"
+                };
+                if open::that_detached(url).is_err() {
+                    self.status("Cannot open the browser", true);
+                }
+            }
             "sync-cancel-btn" => {
                 self.sync.cancel_sign_in();
             }
@@ -620,7 +655,14 @@ impl Core {
                 crate::native_ui::refresh();
                 let id = id.to_owned();
                 native_app::spawn(async move {
-                    let result = get().async_action(&id).await;
+                    let mut result = get().async_action(&id).await;
+                    // Pausing keeps the partial file; it is not a failure.
+                    let paused = result
+                        .as_ref()
+                        .is_err_and(|e| e == crate::download::DOWNLOAD_CANCELLED);
+                    if paused {
+                        result = Ok(());
+                    }
                     get().change(|s| {
                         s.busy.remove(&id);
                         if let Some(key) = download_key(&id) {
@@ -633,6 +675,12 @@ impl Core {
                             }
                         }
                     });
+                    if id == "whisper-download-btn" {
+                        get().update_partial_download();
+                        if paused {
+                            get().status("Download paused", false);
+                        }
+                    }
                     get().refresh_model_state();
                     get().unload_idle_whisper();
                     if let Err(e) = result {
@@ -764,6 +812,18 @@ impl Core {
             s.progress.remove(ready);
         });
         Ok(())
+    }
+
+    /// Records a paused model download so it can be offered as "Resume".
+    fn update_partial_download(&self) {
+        let bytes = crate::partial_whisper_model_bytes(self.app.clone());
+        self.change(|s| {
+            if bytes > 0 {
+                s.labels.insert("whisper-partial".into(), bytes.to_string());
+            } else {
+                s.labels.remove("whisper-partial");
+            }
+        });
     }
 
     fn refresh_model_state(&self) {

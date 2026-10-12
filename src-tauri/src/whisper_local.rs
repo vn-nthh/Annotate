@@ -6,6 +6,7 @@
 //! stdin/stdout JSON. When unloaded, the process is killed and ALL GPU memory
 //! is freed by the OS.
 
+use crate::download::{CancelToken, DownloadSlot};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -158,21 +159,44 @@ pub fn is_loaded() -> bool {
     MODEL_LOADED.load(Ordering::Acquire)
 }
 
-/// Download the model file.
+/// Only one model download may run at a time; pausing cancels it.
+pub static MODEL_DOWNLOAD: DownloadSlot = DownloadSlot::new();
+
+/// Exact size of the published model, for progress before a download starts.
+pub fn model_size_bytes() -> u64 {
+    MODEL_SIZE_BYTES
+}
+
+/// Bytes kept from a paused or interrupted model download.
+pub fn partial_model_bytes(data_dir: &std::path::Path) -> u64 {
+    crate::download::partial_bytes(&model_path(data_dir))
+}
+
+/// Download the model file, resuming a previous partial download if present.
 pub async fn download_model(
     data_dir: &std::path::Path,
     progress_cb: impl Fn(u64, u64) + Send + 'static,
+    cancel: &CancelToken,
 ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
     let dest = model_path(data_dir);
     log::info!("[WhisperLocal] Downloading model to {:?}", dest);
 
+    // No overall timeout: a paused and resumed download can span a long time.
+    // A stalled connection fails on the read timeout and keeps its partial file.
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3600))
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .read_timeout(std::time::Duration::from_secs(60))
         .build()?;
 
-    let downloaded =
-        crate::download::download_verified(&client, MODEL_URL, &dest, MODEL_SHA256, progress_cb)
-            .await?;
+    let downloaded = crate::download::download_verified_resumable(
+        &client,
+        MODEL_URL,
+        &dest,
+        MODEL_SHA256,
+        progress_cb,
+        cancel,
+    )
+    .await?;
 
     write_model_verified_marker(data_dir);
     log::info!("[WhisperLocal] Download complete: {} bytes", downloaded);

@@ -8,6 +8,7 @@ mod native_benchmark;
 mod native_core;
 mod native_data;
 mod native_migrate;
+mod native_onboarding;
 mod native_picker;
 mod native_sync;
 mod native_ui;
@@ -182,17 +183,56 @@ fn check_whisper_model(app: AppHandle) -> Result<bool, String> {
     Ok(whisper_local::is_model_downloaded(&data_dir))
 }
 
-/// Download the whisper model file, emitting progress events
+/// Download the whisper model file, emitting progress events. Resumes a paused
+/// download; fails with `download::DOWNLOAD_CANCELLED` when paused.
 async fn download_whisper_model(app: AppHandle) -> Result<(), String> {
+    let guard = whisper_local::MODEL_DOWNLOAD.begin()?;
     let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    let app_handle = app.clone();
-    whisper_local::download_model(&data_dir, move |downloaded, total| {
-        let _ = app_handle.emit("whisper-download-progress", (downloaded, total));
-    })
+    whisper_local::download_model(
+        &data_dir,
+        throttled_progress(app, "whisper-download-progress"),
+        guard.token(),
+    )
     .await
-    .map_err(|e| format!("Download failed: {}", e))?;
+    .map_err(|e| {
+        if download::is_cancelled(e.as_ref()) {
+            download::DOWNLOAD_CANCELLED.to_owned()
+        } else {
+            format!("Download failed: {e}")
+        }
+    })?;
     Ok(())
+}
+
+/// Pause the model download, keeping the partial file. Returns false when idle.
+fn cancel_whisper_model_download() -> bool {
+    whisper_local::MODEL_DOWNLOAD.cancel()
+}
+
+/// Bytes of a paused model download, if any.
+fn partial_whisper_model_bytes(app: AppHandle) -> u64 {
+    app.path()
+        .app_local_data_dir()
+        .map(|dir| whisper_local::partial_model_bytes(&dir))
+        .unwrap_or(0)
+}
+
+/// Each progress event repaints the window, so report at most once per MiB.
+fn throttled_progress(app: AppHandle, event: &'static str) -> impl Fn(u64, u64) + Send + 'static {
+    const STEP: u64 = 1024 * 1024;
+    let last = std::sync::atomic::AtomicU64::new(u64::MAX);
+    move |downloaded, total| {
+        let previous = last.load(std::sync::atomic::Ordering::Relaxed);
+        if previous == u64::MAX
+            || downloaded < previous
+            || downloaded >= previous + STEP
+            || downloaded == total
+        {
+            last.store(downloaded, std::sync::atomic::Ordering::Relaxed);
+            let _ = app.emit(event, (downloaded, total));
+        }
+    }
 }
 
 /// Load the whisper model — spawns worker process and loads model.

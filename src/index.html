@@ -65,6 +65,14 @@
         </div>
         <!-- Status dot at bottom of sidebar -->
         <div class="sidebar-bottom">
+          <!-- Shown only while an exited setup guide can be resumed -->
+          <button class="tab-btn setup-resume-btn" id="setup-resume-btn" title="Resume setup">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"/>
+              <polygon points="10 8.5 15.5 12 10 15.5 10 8.5"/>
+            </svg>
+            <span>Setup</span>
+          </button>
           <div class="sidebar-status">
             <span id="status-dot" class="status-dot"></span>
             <span id="status-text" class="status-text">Ready</span>
@@ -479,9 +487,221 @@
           <p class="setting-hint">Select text in any app and press this hotkey to add it to your dictionary.</p>
         </section>
 
+        <hr class="divider" />
+
+        <!-- Setup Guide -->
+        <section class="setting-group">
+          <label class="setting-label">Setup Guide</label>
+          <div class="setup-guide-row">
+            <span class="setup-guide-desc" id="setup-guide-desc">Revisit the engine, microphone, and hotkey steps.</span>
+            <button id="setup-guide-btn" class="whisper-action-btn">Run setup again</button>
+          </div>
+        </section>
+
       </section>
     </main>
     </div><!-- /app-body -->
+
+    <!-- Setup Guide (first run; can be exited and resumed) -->
+    <section class="onboarding" id="onboarding">
+      <div class="ob-head">
+        <span class="ob-count" id="ob-count">Step 1 of 6 · Engine</span>
+        <button class="ob-exit" id="ob-exit" title="Exit setup. Resume it any time from Settings.">Exit setup</button>
+      </div>
+      <div class="ob-rail"><span class="ob-seg" id="ob-seg-0"></span><span class="ob-seg" id="ob-seg-1"></span><span class="ob-seg" id="ob-seg-2"></span><span class="ob-seg" id="ob-seg-3"></span><span class="ob-seg" id="ob-seg-4"></span><span class="ob-seg" id="ob-seg-5"></span></div>
+      <div class="ob-body">
+
+        <!-- 1. Engine -->
+        <div class="ob-step" data-step="model">
+          <h2 class="ob-title">Choose a transcription engine</h2>
+          <p class="ob-desc">Annotate turns your speech into text with one of these engines. You can switch later in Settings.</p>
+          <div class="ob-cards">
+            <button class="ob-card" id="ob-engine-groq" data-engine="groq">
+              <span class="ob-card-head"><span class="ob-card-name">Groq Whisper</span><span class="ob-card-tag">Cloud · Free tier</span></span>
+              <span class="ob-card-desc">Fast and accurate. Needs a free Groq API key and an internet connection.</span>
+              <svg class="ob-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+            <button class="ob-card" id="ob-engine-azure-mai" data-engine="azure-mai">
+              <span class="ob-card-head"><span class="ob-card-name">Microsoft MAI Transcribe</span><span class="ob-card-tag">Cloud · Preview</span></span>
+              <span class="ob-card-desc">Uses your Azure AI Foundry project. Needs its endpoint and an API key.</span>
+              <svg class="ob-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+            <button class="ob-card" id="ob-engine-local" data-engine="local">
+              <span class="ob-card-head"><span class="ob-card-name">Local Whisper</span><span class="ob-card-tag">Offline · Private</span></span>
+              <span class="ob-card-desc">Runs on your graphics card. One 547 MB download, no account needed.</span>
+              <svg class="ob-check" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <!-- 2. Get the model -->
+        <div class="ob-step" data-step="install">
+          <div class="ob-install" data-engine="groq">
+            <h2 class="ob-title">Get a Groq API key</h2>
+            <ol class="ob-list">
+              <li><span class="ob-num">1</span><span>Open the Groq console and sign in. It's free.</span></li>
+              <li><span class="ob-num">2</span><span>Create a key under API Keys and copy it.</span></li>
+              <li><span class="ob-num">3</span><span>Paste it below. It's stored in Windows Credential Manager.</span></li>
+            </ol>
+            <button class="ob-link-btn" id="ob-open-groq" title="Opens console.groq.com in your browser">Open Groq console <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+            <section class="ob-field">
+              <label class="setting-label" for="ob-groq-key">Groq API Key</label>
+              <div class="input-wrap">
+                <input type="password" id="ob-groq-key" placeholder="Paste Groq API key" spellcheck="false" autocomplete="off" />
+              </div>
+            </section>
+          </div>
+          <div class="ob-install" data-engine="azure-mai">
+            <h2 class="ob-title">Connect Microsoft MAI Transcribe</h2>
+            <ol class="ob-list">
+              <li><span class="ob-num">1</span><span>Open your project in Azure AI Foundry.</span></li>
+              <li><span class="ob-num">2</span><span>Copy the project endpoint and API key from its overview.</span></li>
+            </ol>
+            <button class="ob-link-btn" id="ob-open-azure" title="Opens ai.azure.com in your browser">Open Azure AI Foundry <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
+            <section class="ob-field">
+              <label class="setting-label" for="ob-azure-endpoint">Foundry Project Endpoint</label>
+              <div class="input-wrap">
+                <input type="text" id="ob-azure-endpoint" placeholder="https://resource.services.ai.azure.com/api/projects/project" spellcheck="false" autocomplete="off" />
+              </div>
+            </section>
+            <section class="ob-field">
+              <label class="setting-label" for="ob-azure-key">Foundry API Key</label>
+              <div class="input-wrap">
+                <input type="password" id="ob-azure-key" placeholder="Paste Foundry API key" spellcheck="false" autocomplete="off" />
+              </div>
+            </section>
+          </div>
+          <div class="ob-install" data-engine="local">
+            <h2 class="ob-title">Download the local model</h2>
+            <p class="ob-desc">Whisper Large v3 Turbo runs on your graphics card through Vulkan, so dictation works offline and stays on this PC.</p>
+            <div class="ob-model">
+              <div class="ob-model-row">
+                <div class="ob-model-info">
+                  <span class="ob-model-name">Whisper Large v3 Turbo</span>
+                  <span class="ob-model-status" id="ob-model-status">Not downloaded · 547 MB</span>
+                </div>
+                <button class="whisper-action-btn ob-model-btn" id="ob-model-btn">Download</button>
+              </div>
+              <div class="ob-progress" id="ob-progress"><div class="ob-progress-fill" id="ob-progress-fill"></div></div>
+              <span class="ob-progress-text" id="ob-progress-text">219 MB of 547 MB</span>
+            </div>
+            <p class="setting-hint">Needs a graphics card with a current Vulkan driver (AMD, Intel, or NVIDIA). You can pause the download and resume it later.</p>
+          </div>
+        </div>
+
+        <!-- 3. Microphone -->
+        <div class="ob-step" data-step="microphone">
+          <h2 class="ob-title">Pick your microphone</h2>
+          <p class="ob-desc">Annotate only listens while you hold the hotkey.</p>
+          <section class="ob-field ob-field-first">
+            <label class="setting-label" for="ob-mic-select">Microphone</label>
+            <div class="select-wrap">
+              <select id="ob-mic-select">
+                <option value="">System Default</option>
+              </select>
+              <span class="select-arrow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </span>
+            </div>
+          </section>
+          <section class="ob-field">
+            <label class="setting-label" for="ob-lang-select">Spoken Language</label>
+            <div class="select-wrap">
+              <select id="ob-lang-select">
+              <option value="auto">Auto-detect</option>
+              <option value="en">English</option>
+              <option value="es">Spanish</option>
+              <option value="fr">French</option>
+              <option value="de">German</option>
+              <option value="it">Italian</option>
+              <option value="pt">Portuguese</option>
+              <option value="nl">Dutch</option>
+              <option value="ru">Russian</option>
+              <option value="ja">Japanese</option>
+              <option value="ko">Korean</option>
+              <option value="zh">Chinese</option>
+              <option value="ar">Arabic</option>
+              <option value="hi">Hindi</option>
+              <option value="tr">Turkish</option>
+              <option value="pl">Polish</option>
+              <option value="sv">Swedish</option>
+              <option value="vi">Vietnamese</option>
+              <option value="th">Thai</option>
+              <option value="id">Indonesian</option>
+              <option value="uk">Ukrainian</option>
+            </select>
+              <span class="select-arrow">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </span>
+            </div>
+            <p class="setting-hint">Auto-detect works for most people. Choosing your language can improve accuracy.</p>
+          </section>
+        </div>
+
+        <!-- 4. Hotkey -->
+        <div class="ob-step" data-step="hotkey">
+          <h2 class="ob-title">Set your push-to-talk hotkey</h2>
+          <p class="ob-desc">Hold it to record. Let go, and the text is pasted where your cursor is.</p>
+          <section class="ob-field ob-field-first">
+            <label class="setting-label">Push-to-Talk Hotkey</label>
+            <button id="ob-hotkey-btn" class="hotkey-recorder">
+              <span id="ob-hotkey-display">Click to set</span>
+            </button>
+            <div class="ob-chips">
+              <span class="ob-chips-label">Suggestions</span>
+              <button class="ob-chip" id="ob-chip-0">Ctrl+Shift+Space</button>
+              <button class="ob-chip" id="ob-chip-1">Ctrl+Alt+Space</button>
+            </div>
+            <p class="setting-hint">Pick keys you don't use for anything else. Press Esc to cancel recording.</p>
+          </section>
+        </div>
+
+        <!-- 5. Try it -->
+        <div class="ob-step" data-step="try">
+          <h2 class="ob-title">Try it</h2>
+          <p class="ob-desc">Click the box below, hold your hotkey, and say a sentence. Let go to paste the text.</p>
+          <div class="ob-try-hotkey-row">
+            <span class="ob-try-label">Your hotkey</span>
+            <span class="ob-kbd" id="ob-try-hotkey">Ctrl+Shift+Space</span>
+          </div>
+          <div class="input-wrap">
+            <input type="text" id="ob-try-input" class="ob-try-input" placeholder="Your words appear here" spellcheck="false" autocomplete="off" />
+          </div>
+          <p class="ob-try-status" id="ob-try-status">Waiting for your hotkey</p>
+        </div>
+
+        <!-- 6. Features -->
+        <div class="ob-step" data-step="features">
+          <h2 class="ob-title">You're ready</h2>
+          <p class="ob-desc">A few more things Annotate can do. Everything is in the sidebar.</p>
+          <div class="ob-features">
+            <div class="ob-feature">
+              <div class="ob-feature-text"><span class="ob-feature-name">History</span><span class="ob-feature-desc">Every transcription is kept on Home, ready to copy again.</span></div>
+              <button class="ob-feature-btn" id="ob-feature-home" title="Finish setup and open History">Open</button>
+            </div>
+            <div class="ob-feature">
+              <div class="ob-feature-text"><span class="ob-feature-name">Dictionary</span><span class="ob-feature-desc">Add names and jargon so they're spelled right, even from selected text in any app.</span></div>
+              <button class="ob-feature-btn" id="ob-feature-dictionary" title="Finish setup and open Dictionary">Open</button>
+            </div>
+            <div class="ob-feature">
+              <div class="ob-feature-text"><span class="ob-feature-name">Subtitles</span><span class="ob-feature-desc">Make SRT subtitles from audio and video files.</span></div>
+              <button class="ob-feature-btn" id="ob-feature-subtitling" title="Finish setup and open Subtitles">Open</button>
+            </div>
+            <div class="ob-feature">
+              <div class="ob-feature-text"><span class="ob-feature-name">Settings</span><span class="ob-feature-desc">Grammar cleanup, Google Drive sync, and dark mode.</span></div>
+              <button class="ob-feature-btn" id="ob-feature-settings" title="Finish setup and open Settings">Open</button>
+            </div>
+          </div>
+          <p class="setting-hint">Closing the window keeps Annotate in the tray, so your hotkey keeps working.</p>
+        </div>
+      </div>
+      <div class="ob-foot-rule"></div>
+      <div class="ob-foot">
+        <button class="ob-btn ob-btn-secondary" id="ob-back">Back</button>
+        <span class="ob-hint" id="ob-hint">Paste your API key to continue</span>
+        <button class="ob-btn ob-btn-primary" id="ob-next">Continue</button>
+      </div>
+    </section>
   </div>
 
   <!-- Close Prompt Modal -->

@@ -2,6 +2,7 @@
 //! The reference JSON is measured at build/development time, never by Chromium
 //! at runtime. Controls retain native keyboard, IME, and accessibility behavior.
 use crate::native_core::{get, State};
+use crate::native_onboarding::{self as setup, Onboarding, Status};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
@@ -74,6 +75,38 @@ struct Scene {
     #[serde(default)]
     fixture: serde_json::Value,
 }
+/// Reference scenes, parsed on first use. Most windows show only a few of
+/// them, so parsing every scene up front would cost memory and startup time.
+struct Scenes {
+    raw: HashMap<&'static str, &'static serde_json::value::RawValue>,
+    parsed: std::cell::RefCell<HashMap<&'static str, std::rc::Rc<Scene>>>,
+}
+impl Scenes {
+    fn load() -> Result<Self, String> {
+        Ok(Self {
+            raw: serde_json::from_str(include_str!("../assets/native-reference.json"))
+                .map_err(|e| e.to_string())?,
+            parsed: Default::default(),
+        })
+    }
+    fn get(&self, key: &str) -> Option<std::rc::Rc<Scene>> {
+        let (&key, raw) = self.raw.get_key_value(key)?;
+        if let Some(scene) = self.parsed.borrow().get(key) {
+            return Some(scene.clone());
+        }
+        let scene = std::rc::Rc::new(serde_json::from_str::<Scene>(raw.get()).ok()?);
+        self.parsed.borrow_mut().insert(key, scene.clone());
+        Some(scene)
+    }
+    /// A scene that the reference always contains.
+    fn at(&self, key: &str) -> std::rc::Rc<Scene> {
+        self.get(key)
+            .unwrap_or_else(|| panic!("Missing native reference scene: {key}"))
+    }
+    fn keys(&self) -> Vec<String> {
+        self.raw.keys().map(|k| k.to_string()).collect()
+    }
+}
 #[derive(Default)]
 struct Memory {
     tab: String,
@@ -95,7 +128,7 @@ struct Window {
     hwnd: HWND,
     memory: Memory,
     state: State,
-    scenes: HashMap<String, Scene>,
+    scenes: Scenes,
     renderer: Renderer,
     nodes: Vec<Node>,
     controls: Vec<Control>,
@@ -114,6 +147,9 @@ struct Window {
     copied: Option<(String, std::time::Instant)>,
     preview_scroll: f32,
     modal_focus: Option<String>,
+    /// The "Try it" step saw the hotkey start a recording, then a paste.
+    try_listening: bool,
+    try_done: bool,
 }
 
 pub fn initialize() -> Result<(), String> {
@@ -290,8 +326,10 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
             GWLP_USERDATA,
             (&mut *window as *mut Window) as isize,
         );
+        // The isolated profile is a new install; only the setup scenes show the guide.
+        get().set_setting(setup::KEY, Onboarding::initial(true, "groq").to_value())?;
         let initial = get().snapshot();
-        let mut keys: Vec<_> = window.scenes.keys().cloned().collect();
+        let mut keys = window.scenes.keys();
         keys.sort();
         let mut controls = HashMap::new();
         for key in keys {
@@ -304,7 +342,7 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
             window.preview_scroll = 0.0;
             let parts: Vec<_> = key.split(':').collect();
             window.modal = parts[1] == "modal";
-            window.memory.tab = if window.modal {
+            window.memory.tab = if window.modal || parts[1] == "onboarding" {
                 "home"
             } else {
                 parts[1].split('-').next().unwrap_or("home")
@@ -317,6 +355,17 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
                 .state
                 .settings
                 .insert("theme".into(), serde_json::json!(parts[0]));
+            if parts[1] == "onboarding" {
+                let mut guide = Onboarding::initial(false, parts.get(3).copied().unwrap_or("groq"));
+                guide.step = setup::STEPS
+                    .iter()
+                    .position(|(id, _)| *id == parts[2])
+                    .unwrap_or(0);
+                window
+                    .state
+                    .settings
+                    .insert(setup::KEY.into(), guide.to_value());
+            }
             if parts[1] == "settings" {
                 window
                     .state
@@ -334,7 +383,7 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
                 });
                 window.state.auth_waiting = parts[5] == "waiting";
             }
-            let fixture = window.scenes[&key].fixture.clone();
+            let fixture = window.scenes.at(&key).fixture.clone();
             window.apply_fixture(&fixture)?;
             window.update(true);
             save_png(
@@ -367,7 +416,7 @@ pub fn capture_reference(directory: &std::path::Path) -> Result<(), String> {
             serde_json::to_vec_pretty(&controls).unwrap(),
         )
         .map_err(|e| e.to_string())?;
-        let checks = window.check_interactions()?;
+        let checks = window.check_interactions(directory)?;
         std::fs::write(
             directory.join("checks.json"),
             serde_json::to_vec_pretty(&checks).unwrap(),
@@ -444,8 +493,7 @@ impl Window {
                 return Err(e.to_string());
             }
         };
-        let scenes = serde_json::from_str(include_str!("../assets/native-reference.json"))
-            .map_err(|e| e.to_string())?;
+        let scenes = Scenes::load()?;
         let tooltip = CreateWindowExW(
             WS_EX_TOPMOST,
             TOOLTIPS_CLASSW,
@@ -484,6 +532,8 @@ impl Window {
             copied: None,
             preview_scroll: 0.0,
             modal_focus: None,
+            try_listening: false,
+            try_done: false,
         }))
     }
     fn theme(&self) -> &str {
@@ -538,7 +588,10 @@ impl Window {
         }
         Ok(())
     }
-    unsafe fn check_interactions(&mut self) -> Result<Vec<&'static str>, String> {
+    unsafe fn check_interactions(
+        &mut self,
+        directory: &std::path::Path,
+    ) -> Result<Vec<&'static str>, String> {
         let mut checks = vec![];
         self.modal = false;
         self.memory.scroll.clear();
@@ -793,7 +846,7 @@ impl Window {
         }
         checks.push("Dependency downloads show progress and restore retry after failure");
         self.state = get().snapshot();
-        let fixture = self.scenes["light:subtitling-summary"].fixture.clone();
+        let fixture = self.scenes.at("light:subtitling-summary").fixture.clone();
         self.apply_fixture(&fixture)?;
         self.state.labels.remove("openrouter-key-input");
         self.update(true);
@@ -904,7 +957,7 @@ impl Window {
             return Err("Capture unexpectedly owns the live clipboard".into());
         }
         self.memory.tab = "home".into();
-        let fixture = self.scenes["light:home-filled"].fixture.clone();
+        let fixture = self.scenes.at("light:home-filled").fixture.clone();
         self.apply_fixture(&fixture)?;
         self.update(true);
         self.click("history-copy:0");
@@ -1072,18 +1125,232 @@ impl Window {
             return Err("Reopening from tray lost the setting".into());
         }
         checks.push("Tray close releases the HWND and reopening retains the saved setting");
+        // The original HWND was released to the tray; continue in the new one.
+        reopened.check_setup(&mut checks, directory)?;
         drop(reopened);
         Ok(checks)
+    }
+    /// Walks the setup guide through its real controls. Never saves API keys:
+    /// those would reach the live Windows Credential Manager.
+    unsafe fn check_setup(
+        &mut self,
+        checks: &mut Vec<&'static str>,
+        directory: &std::path::Path,
+    ) -> Result<(), String> {
+        // Live states the reference scenes cannot show, saved for review.
+        let snap = |w: &Self, name: &str| -> Result<(), String> {
+            save_png(
+                &directory.join(format!("light-setup-{name}.png")),
+                w.renderer.width,
+                w.renderer.height,
+                &w.capture_pixels(WM_PRINT)?,
+            )
+        };
+        let control = |w: &Self, id: &str| w.controls.iter().find(|c| c.id == id).map(|c| c.hwnd);
+        let text = |w: &Self, id: &str| {
+            w.nodes
+                .iter()
+                .find(|n| n.id == id && n.kind == "text")
+                .map(|n| n.text.clone())
+                .unwrap_or_default()
+        };
+        self.modal = false;
+        self.memory.tab = "home".into();
+        get().set_setting(setup::KEY, Onboarding::initial(false, "groq").to_value())?;
+        self.state = get().snapshot();
+        self.update(true);
+        if control(self, "ob-engine-groq").is_none()
+            || control(self, "tab:home").is_some()
+            || control(self, "ob-back").is_some()
+        {
+            return Err("A new install did not open the setup guide on its first step".into());
+        }
+        checks.push("A new install opens the setup guide, which replaces the tabs until exited");
+        self.click("ob-engine-local");
+        self.click("ob-next");
+        if self.setup().step_id() != "install"
+            || self.state.mode() == "local"
+            || control(self, "ob-model-btn").is_none()
+            || control(self, "ob-next").is_some_and(|h| IsWindowEnabled(h).as_bool())
+        {
+            return Err("Local setup did not wait for the model download".into());
+        }
+        checks.push("Choosing Local Whisper waits for the model before switching engines");
+        get().change(|s| {
+            s.busy.insert("whisper-download-btn".into());
+            s.progress.insert("whisper".into(), (0.5, "50%".into()));
+        });
+        self.state = get().snapshot();
+        self.update(false);
+        let half = text(self, "ob-progress-text");
+        if text(self, "ob-model-btn") != "Pause"
+            || !half.starts_with("274 MB of 547 MB")
+            || text(self, "ob-model-status") != "Downloading… 50%"
+        {
+            return Err(format!("Download row mismatch while downloading: {half}"));
+        }
+        snap(self, "downloading")?;
+        get().change(|s| {
+            s.busy.remove("whisper-download-btn");
+            s.progress.remove("whisper");
+            s.labels
+                .insert("whisper-partial".into(), "287020597".into());
+        });
+        self.state = get().snapshot();
+        self.update(false);
+        if text(self, "ob-model-btn") != "Resume"
+            || text(self, "ob-model-status") != "Paused at 50%"
+        {
+            return Err("A paused download is not offered for resuming".into());
+        }
+        snap(self, "paused")?;
+        checks.push("The model download shows progress, pauses, and offers to resume");
+        self.click("ob-exit");
+        if self.setup().status != Status::Paused
+            || control(self, "setup-resume-btn").is_none()
+            || control(self, "tab:home").is_none()
+        {
+            return Err("Exit setup did not return to the app with a resume button".into());
+        }
+        snap(self, "exited")?;
+        self.memory.tab = "settings".into();
+        self.memory.scroll.insert("settings".into(), 100000.0);
+        self.update(true);
+        if text(self, "setup-guide-btn") != "Resume setup"
+            || !text(self, "setup-guide-desc").contains("step 2 of 6")
+        {
+            return Err("Settings does not offer to resume a paused setup".into());
+        }
+        snap(self, "settings-resume")?;
+        checks.push("Exiting setup keeps its step and offers Resume in the sidebar and Settings");
+        self.click("setup-resume-btn");
+        if !self.setup().is_open() || self.setup().step_id() != "install" {
+            return Err("Resume did not reopen setup at the same step".into());
+        }
+        get().change(|s| {
+            s.ready.insert("whisper".into());
+            s.labels.remove("whisper-partial");
+        });
+        self.state = get().snapshot();
+        self.update(false);
+        self.click("ob-next");
+        if self.state.mode() != "local" || self.setup().step_id() != "microphone" {
+            return Err("Continuing after the download did not switch to Local Whisper".into());
+        }
+        checks.push(
+            "Resuming returns to the same step; continuing switches the engine once it works",
+        );
+        self.click("ob-next");
+        self.click("ob-chip-0");
+        self.state = get().snapshot();
+        self.update(false);
+        if self.setup().step_id() != "hotkey"
+            || control(self, "ob-next").is_some_and(|h| IsWindowEnabled(h).as_bool())
+        {
+            return Err("Setup continued without a working hotkey".into());
+        }
+        snap(self, "hotkey-failed")?;
+        checks.push("Setup waits for a hotkey that registered successfully");
+        get().set_setting("hotkey", serde_json::json!("Ctrl+Shift+Space"))?;
+        self.state = get().snapshot();
+        self.update(false);
+        self.click("ob-next");
+        if self.setup().step_id() != "try"
+            || text(self, "ob-next") != "Skip"
+            || text(self, "ob-try-hotkey") != "Ctrl+Shift+Space"
+        {
+            return Err("The Try it step did not show the hotkey and a Skip option".into());
+        }
+        get().status("Listening…", false);
+        self.state = get().snapshot();
+        self.update(false);
+        get().status("Done", false);
+        self.state = get().snapshot();
+        self.update(false);
+        if text(self, "ob-next") != "Continue"
+            || !text(self, "ob-try-status").starts_with("It works")
+        {
+            return Err("A successful try did not confirm and allow continuing".into());
+        }
+        snap(self, "try-done")?;
+        checks.push("Try it confirms a real recording and paste before continuing");
+        self.click("ob-next");
+        self.click("ob-feature-dictionary");
+        if self.setup().status != Status::Completed
+            || self.memory.tab != "dictionary"
+            || control(self, "setup-resume-btn").is_some()
+        {
+            return Err("Opening a feature did not finish setup".into());
+        }
+        checks.push("Finishing setup opens the chosen feature and removes the resume button");
+        self.memory.tab = "settings".into();
+        self.memory.scroll.clear();
+        get().change(|s| {
+            s.ready.remove("whisper");
+            s.busy.insert("whisper-download-btn".into());
+            s.progress.insert("whisper".into(), (0.5, "50%".into()));
+        });
+        self.state = get().snapshot();
+        self.update(true);
+        // Scroll the model row into view so its button is a live control.
+        let row = self
+            .nodes
+            .iter()
+            .find(|n| n.id == "whisper-status-text")
+            .map_or(0.0, |n| n.rect[1]);
+        self.memory.scroll.insert("settings".into(), (row - 260.0).max(0.0));
+        self.update(true);
+        if !self.controls.iter().any(|c| c.id == "whisper-pause-btn") {
+            return Err("Settings offers no way to pause the model download".into());
+        }
+        snap(self, "settings-downloading")?;
+        get().change(|s| {
+            s.busy.remove("whisper-download-btn");
+            s.progress.remove("whisper");
+            s.labels
+                .insert("whisper-partial".into(), "287020597".into());
+        });
+        self.state = get().snapshot();
+        self.update(true);
+        if text(self, "whisper-status-text") != "Download paused at 50%"
+            || text(self, "whisper-download-btn") != "Resume Download"
+        {
+            return Err("Settings does not offer to resume a paused model download".into());
+        }
+        snap(self, "settings-paused")?;
+        checks.push("Settings can pause the model download and resume it later");
+        Ok(())
     }
     fn scroll(&self) -> f32 {
         *self.memory.scroll.get(&self.memory.tab).unwrap_or(&0.0)
     }
     fn draft_key(&self, id: &str) -> String {
-        if id == "apikey-input" {
-            format!("{id}:{}", self.state.mode())
-        } else {
-            id.into()
+        match id {
+            "apikey-input" => format!("{id}:{}", self.state.mode()),
+            "ob-groq-key" => "apikey-input:groq".into(),
+            "ob-azure-key" => "apikey-input:azure-mai".into(),
+            "ob-azure-endpoint" => "azure-endpoint-input".into(),
+            _ => id.into(),
         }
+    }
+    fn key_shown(&self, id: &str) -> bool {
+        if id == "openrouter-key-input" {
+            self.show_summary_key
+        } else {
+            self.show_keys
+        }
+    }
+    /// The text a control holds now, including an edit not yet saved.
+    fn live(&self, id: &str) -> String {
+        self.controls
+            .iter()
+            .find(|c| c.id == id)
+            .map(|c| unsafe { read_text(c.hwnd) })
+            .or_else(|| self.memory.drafts.get(&self.draft_key(id)).cloned())
+            .unwrap_or_else(|| self.field(id))
+    }
+    fn setup(&self) -> Onboarding {
+        Onboarding::from_value(self.state.settings.get(setup::KEY), &self.state.mode())
     }
     fn list_viewport(&self, dict: bool) -> [f32; 4] {
         if dict {
@@ -1103,8 +1370,12 @@ impl Window {
     }
     fn field(&self, id: &str) -> String {
         let s = &self.state;
-        match id {
-            "dict-input" => self.memory.drafts.get(id).cloned().unwrap_or_default(),
+        match alias(id) {
+            "dict-input" | "ob-try-input" => {
+                self.memory.drafts.get(id).cloned().unwrap_or_default()
+            }
+            "ob-groq-key" => s.label("groq-key", ""),
+            "ob-azure-key" => s.label("azure-key", ""),
             "apikey-input" => s.label(
                 if s.mode() == "azure-mai" {
                     "azure-key"
@@ -1132,7 +1403,15 @@ impl Window {
             .as_ref()
             .and_then(|user| user["picture"].as_str())
             .is_some_and(|url| !url.is_empty());
-        let key = if tab == "settings" {
+        let guide = self.setup();
+        let key = if guide.is_open() {
+            match guide.step_id() {
+                step @ ("model" | "install") => {
+                    format!("{theme}:onboarding:{step}:{}", guide.engine)
+                }
+                step => format!("{theme}:onboarding:{step}"),
+            }
+        } else if tab == "settings" {
             format!(
                 "{theme}:settings:{}:{}:{}:{}",
                 self.state.mode(),
@@ -1175,21 +1454,33 @@ impl Window {
         let scene = self
             .scenes
             .get(&key)
-            .unwrap_or(&self.scenes[&format!("{theme}:home")])
-            .clone();
-        self.nodes = scene.nodes;
+            .unwrap_or_else(|| self.scenes.at(&format!("{theme}:home")));
+        self.nodes = scene.nodes.clone();
         self.height = scene.height;
-        // The reference contains the empty lists. Build their native rows using
-        // the same card sizes, font sizes, gaps, and padding as index.css.
-        if tab == "home" || tab == "dictionary" {
-            self.populate_list(tab == "dictionary");
+        if guide.is_open() {
+            // The guide fits the window; it never scrolls.
+            self.height = 532.0;
+            self.onboarding_state(&guide);
+        } else {
+            // The reference contains the empty lists. Build their native rows using
+            // the same card sizes, font sizes, gaps, and padding as index.css.
+            if tab == "home" || tab == "dictionary" {
+                self.populate_list(tab == "dictionary");
+            }
+            if tab == "subtitling" {
+                self.subtitles();
+            }
+            self.settings_state();
+            self.setup_entry_points(&guide);
         }
-        if tab == "subtitling" {
-            self.subtitles();
+        let scroll = if guide.is_open() {
+            0.0
+        } else {
+            self.scroll().min((self.height - 532.0).max(0.0))
+        };
+        if !guide.is_open() {
+            self.memory.scroll.insert(self.memory.tab.clone(), scroll);
         }
-        self.settings_state();
-        let scroll = self.scroll().min((self.height - 532.0).max(0.0));
-        self.memory.scroll.insert(self.memory.tab.clone(), scroll);
         for n in &mut self.nodes {
             if ((tab == "home" || tab == "dictionary") && n.classes.contains("native-list"))
                 || (tab != "home"
@@ -1234,10 +1525,8 @@ impl Window {
                         }) {
                         "Press a shortcut…".into()
                     } else {
-                        self.state.setting(
-                            if dict { "dictHotkey" } else { "hotkey" },
-                            "Click to set",
-                        )
+                        self.state
+                            .setting(if dict { "dictHotkey" } else { "hotkey" }, "Click to set")
                     };
                     n.rect[0] = 92.0;
                     n.rect[2] = 404.0;
@@ -1289,7 +1578,7 @@ impl Window {
             .retain(|n| n.id != "sync-user-avatar" || has_picture);
         if self.modal {
             let key = format!("{}:modal", self.theme());
-            for n in &self.scenes[&key].nodes {
+            for n in &self.scenes.at(&key).nodes {
                 if n.owner == "close-modal"
                     || n.id == "close-modal"
                     || n.owner.starts_with("modal-")
@@ -1314,8 +1603,10 @@ impl Window {
                     "warm",
                     "transparent",
                     0.0,
-                    if hit.owner.starts_with("tab:") {
+                    if hit.owner.starts_with("tab:") || hit.owner == "setup-resume-btn" {
                         10.0
+                    } else if hit.owner == "ob-exit" {
+                        6.0
                     } else {
                         0.0
                     },
@@ -1373,12 +1664,11 @@ impl Window {
             !n.classes
                 .contains(if dict { "dict-empty" } else { "history-empty" })
         });
-        let template = self.scenes[&format!(
+        let template = self.scenes.at(&format!(
             "{}:{}-filled",
             self.theme(),
             if dict { "dictionary" } else { "home" }
-        )]
-            .clone();
+        ));
         let count_id = if dict { "dict-count" } else { "history-count" };
         let count_text = count.to_string();
         let count_width =
@@ -1565,8 +1855,9 @@ impl Window {
         if !dict {
             for n in template
                 .nodes
-                .into_iter()
+                .iter()
                 .filter(|n| n.id == "history-clear")
+                .cloned()
             {
                 self.nodes.push(n);
             }
@@ -1578,7 +1869,7 @@ impl Window {
         let mode = s.mode();
         for n in &mut self.nodes {
             if n.kind == "select" {
-                if n.id == "mic-select" {
+                if alias(&n.id) == "mic-select" {
                     n.options = s
                         .mics
                         .iter()
@@ -1588,7 +1879,7 @@ impl Window {
                         n.options.push(["".into(), "No devices found".into()]);
                     }
                 }
-                let key = match n.id.as_str() {
+                let key = match alias(&n.id) {
                     "mic-select" => "audioDeviceId",
                     "mode-select" => "transcriptionMode",
                     "acceleration-select" => "whisperAcceleration",
@@ -1798,6 +2089,466 @@ impl Window {
             }
         }
     }
+    /// Share of a paused model download that is already on disk.
+    fn paused_fraction(&self) -> Option<f32> {
+        let bytes = self
+            .state
+            .label("whisper-partial", "0")
+            .parse::<u64>()
+            .ok()?;
+        (bytes > 0).then(|| {
+            (bytes as f64 / crate::whisper_local::model_size_bytes() as f64).min(1.0) as f32
+        })
+    }
+    /// Why the current setup step cannot be left yet, if anything.
+    fn setup_blocker(&self, guide: &Onboarding) -> Option<&'static str> {
+        match guide.step_id() {
+            "install" => {
+                let (groq_key, azure_key, endpoint) = (
+                    self.live("ob-groq-key"),
+                    self.live("ob-azure-key"),
+                    self.live("ob-azure-endpoint"),
+                );
+                setup::install_blocker(
+                    &guide.engine,
+                    &setup::Readiness {
+                        groq_key: &groq_key,
+                        azure_key: &azure_key,
+                        endpoint: &endpoint,
+                        model_downloaded: self.state.ready.contains("whisper"),
+                    },
+                )
+            }
+            "hotkey" if self.state.setting("hotkey", "").is_empty() => {
+                Some("Set a hotkey to continue")
+            }
+            _ => None,
+        }
+    }
+    /// Sidebar and Settings entry points for resuming or rerunning setup.
+    fn setup_entry_points(&mut self, guide: &Onboarding) {
+        let paused = guide.status == Status::Paused;
+        let progress = format!(
+            "step {} of {}: {}",
+            guide.step + 1,
+            setup::STEPS.len(),
+            guide.step_label()
+        );
+        self.nodes
+            .retain(|n| n.owner != "setup-resume-btn" || paused);
+        for n in &mut self.nodes {
+            if n.owner == "setup-resume-btn" {
+                n.title = format!("Resume setup at {progress}");
+            }
+        }
+        let Some(button) = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == "hit" && n.owner == "setup-guide-btn")
+            .cloned()
+        else {
+            return;
+        };
+        let (description, label) = if paused {
+            (format!("Paused at {progress}."), "Resume setup")
+        } else {
+            (
+                "Revisit the engine, microphone, and hotkey steps.".to_owned(),
+                "Run setup again",
+            )
+        };
+        let width = self.renderer.text_width(label, 10.92, 600) + 28.0;
+        let x = button.rect[0] + button.rect[2] - width;
+        for n in &mut self.nodes {
+            if n.owner == "setup-guide-btn" {
+                if n.kind == "text" {
+                    n.text = label.into();
+                    n.rect[0] = x + 14.0;
+                    n.rect[2] = width - 28.0;
+                    n.wrap = n.rect[2];
+                    n.align = "center".into();
+                    n.nowrap = true;
+                } else {
+                    n.rect[0] = x;
+                    n.rect[2] = width;
+                }
+            }
+            if n.id == "setup-guide-desc" {
+                n.text = description.clone();
+                n.rect[2] = x - 12.0 - n.rect[0];
+                n.wrap = n.rect[2];
+                n.nowrap = true;
+                n.title = description.clone();
+            }
+        }
+    }
+    /// Fills the setup guide's live values into its reference scene.
+    fn onboarding_state(&mut self, guide: &Onboarding) {
+        let dark = self.state.dark();
+        let step = guide.step_id();
+        let status = self.state.label("status-text", "Ready");
+        if step == "try" {
+            self.try_listening |= status == "Listening…";
+            self.try_done |= self.try_listening && status == "Done";
+        }
+        let blocker = self.setup_blocker(guide);
+        let next_label = if guide.is_last() {
+            "Start using Annotate"
+        } else if step == "try" && !self.try_done {
+            "Skip"
+        } else {
+            "Continue"
+        };
+        let hotkey = self.state.setting("hotkey", "");
+        let recording = self.state.recording_hotkey.as_deref() == Some("hotkey-btn");
+        let count = format!(
+            "Step {} of {} · {}",
+            guide.step + 1,
+            setup::STEPS.len(),
+            guide.step_label()
+        )
+        .to_uppercase();
+        if guide.step == 0 {
+            self.nodes.retain(|n| n.owner != "ob-back");
+        }
+        let next = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == "hit" && n.owner == "ob-next")
+            .map(|n| n.rect)
+            .unwrap_or([400.0, 529.0, 96.0, 36.0]);
+        let next_width = self.renderer.text_width(next_label, 11.48, 600) + 36.0;
+        let next_x = next[0] + next[2] - next_width;
+        let hint_left = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == "hit" && n.owner == "ob-back")
+            .map_or(24.0, |n| n.rect[0] + n.rect[2] + 12.0);
+        let try_text = match status.as_str() {
+            "Listening…" => "Listening. Let go of the keys when you're done.".to_owned(),
+            "Transcribing…" | "Cleaning grammar…" | "Pasting…" => status.clone(),
+            "No speech" => "Didn't catch that. Hold the keys while you speak.".into(),
+            "Set API key" => "No API key yet. Go back to step 2 to add one.".into(),
+            "Set Azure endpoint" => "No endpoint yet. Go back to step 2 to add it.".into(),
+            "Microphone failed" => "The microphone didn't start. Check it in step 3.".into(),
+            "Transcribe failed" => format!(
+                "Transcription failed: {}",
+                self.state.label("status-detail", "try again")
+            ),
+            _ if self.try_done => "It works. Your words were pasted where the cursor was.".into(),
+            _ => "Waiting for your hotkey".into(),
+        };
+        let try_error = self.state.ready.contains("status-error");
+        // Local model download row.
+        let total = crate::whisper_local::model_size_bytes();
+        let downloading = self.state.busy.contains("whisper-download-btn");
+        let downloaded = self.state.ready.contains("whisper");
+        let failed = !self.state.label("whisper-status-error", "").is_empty();
+        let fraction = if downloading {
+            Some(self.state.progress.get("whisper").map_or(0.0, |p| p.0))
+        } else if downloaded {
+            None
+        } else {
+            self.paused_fraction()
+        };
+        let percent = fraction.map_or(0.0, |f| f * 100.0);
+        let (model_status, model_button) = if downloaded {
+            ("Downloaded and ready".to_owned(), "")
+        } else if downloading {
+            (format!("Downloading… {percent:.0}%"), "Pause")
+        } else if fraction.is_some() {
+            (format!("Paused at {percent:.0}%"), "Resume")
+        } else if failed {
+            (
+                "Download failed. Check your connection.".to_owned(),
+                "Retry",
+            )
+        } else {
+            (
+                format!("Not downloaded · {}", setup::megabytes(total)),
+                "Download",
+            )
+        };
+        let progress_text = fraction.map(|f| {
+            format!(
+                "{} of {}",
+                setup::megabytes((f as f64 * total as f64) as u64),
+                setup::megabytes(total)
+            )
+        });
+        let button_rect = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == "hit" && n.owner == "ob-model-btn")
+            .map(|n| n.rect);
+        let bar = self
+            .nodes
+            .iter()
+            .find(|n| n.id == "ob-progress" && n.kind == "rect")
+            .map(|n| n.rect);
+        let hotkey_button = self
+            .nodes
+            .iter()
+            .find(|n| n.kind == "hit" && n.owner == "ob-hotkey-btn")
+            .map(|n| n.rect);
+        let kbd_text = if hotkey.is_empty() {
+            "Not set".to_owned()
+        } else {
+            hotkey.clone()
+        };
+        let kbd_width = self.renderer.text_width(&kbd_text, 10.92, 600) + 18.0;
+        let options: Vec<[String; 2]> = self
+            .state
+            .mics
+            .iter()
+            .map(|m| [m.id.clone(), m.name.clone()])
+            .collect();
+        for i in 0..setup::STEPS.len() {
+            let ink = if i <= guide.step { "ink" } else { "rule" };
+            let background = color(dark, ink);
+            if let Some(n) = self
+                .nodes
+                .iter_mut()
+                .find(|n| n.id == format!("ob-seg-{i}"))
+            {
+                n.background = background;
+            }
+        }
+        for n in &mut self.nodes {
+            match n.id.as_str() {
+                "ob-count" => {
+                    n.text = count.clone();
+                    n.rect[2] = 360.0;
+                    n.wrap = 360.0;
+                    n.nowrap = true;
+                }
+                "ob-hint" => {
+                    n.text = blocker.unwrap_or("").into();
+                    n.rect[0] = hint_left;
+                    n.rect[2] = next_x - 12.0 - hint_left;
+                    n.wrap = n.rect[2];
+                    n.align = "right".into();
+                    n.nowrap = true;
+                }
+                "ob-hotkey-display" => {
+                    n.text = if recording {
+                        "Press a shortcut…".into()
+                    } else if hotkey.is_empty() {
+                        "Click to set".into()
+                    } else {
+                        hotkey.clone()
+                    };
+                    if let Some(r) = hotkey_button {
+                        n.rect[0] = r[0];
+                        n.rect[2] = r[2];
+                        n.wrap = r[2];
+                        n.align = "center".into();
+                    }
+                    n.color = color(
+                        dark,
+                        if hotkey.is_empty() || recording {
+                            "light"
+                        } else {
+                            "ink"
+                        },
+                    );
+                    n.weight = if hotkey.is_empty() { 500 } else { 600 };
+                }
+                "ob-try-hotkey" => {
+                    if n.kind == "text" {
+                        n.text = kbd_text.clone();
+                        n.rect[2] = kbd_width - 16.0;
+                        n.wrap = n.rect[2];
+                        n.nowrap = true;
+                    } else {
+                        n.rect[2] = kbd_width;
+                    }
+                }
+                "ob-try-status" => {
+                    n.text = try_text.clone();
+                    n.rect[2] = 472.0;
+                    n.wrap = 472.0;
+                    n.nowrap = true;
+                    n.title = try_text.clone();
+                    n.color = color(
+                        dark,
+                        if try_error {
+                            "danger"
+                        } else if self.try_done {
+                            "ink"
+                        } else {
+                            "light"
+                        },
+                    );
+                }
+                "ob-model-status" => {
+                    n.text = model_status.clone();
+                    n.rect[2] = 300.0;
+                    n.wrap = 300.0;
+                    n.nowrap = true;
+                    n.color = color(
+                        dark,
+                        if failed && !downloading {
+                            "danger"
+                        } else if downloaded {
+                            "ink"
+                        } else {
+                            "light"
+                        },
+                    );
+                }
+                "ob-progress-fill" => {
+                    if let Some(bar) = bar {
+                        n.rect = [
+                            bar[0] + 1.0,
+                            bar[1] + 1.0,
+                            (bar[2] - 2.0) * fraction.unwrap_or(0.0).clamp(0.0, 1.0),
+                            bar[3] - 2.0,
+                        ];
+                    }
+                }
+                "ob-progress-text" => {
+                    n.text = progress_text.clone().unwrap_or_default();
+                    n.rect[2] = 300.0;
+                    n.wrap = 300.0;
+                    n.nowrap = true;
+                }
+                _ => {}
+            }
+            if n.owner == "ob-model-btn" && n.kind == "text" {
+                if let Some(r) = button_rect {
+                    n.text = model_button.into();
+                    n.rect[0] = r[0];
+                    n.rect[2] = r[2];
+                    n.wrap = r[2];
+                    n.align = "center".into();
+                    n.nowrap = true;
+                }
+            }
+            if n.owner == "ob-next" {
+                n.disabled = blocker.is_some();
+                n.opacity = if n.disabled { 0.4 } else { 1.0 };
+                n.rect[0] = next_x;
+                n.rect[2] = next_width;
+                if n.kind == "text" {
+                    n.text = next_label.into();
+                    n.wrap = next_width;
+                    n.align = "center".into();
+                    n.nowrap = true;
+                }
+            }
+            if n.kind == "select" {
+                if n.id == "ob-mic-select" {
+                    n.options = if options.is_empty() {
+                        vec![["".into(), "No devices found".into()]]
+                    } else {
+                        options.clone()
+                    };
+                }
+                let value = self.state.setting(
+                    if n.id == "ob-mic-select" {
+                        "audioDeviceId"
+                    } else {
+                        "liveLanguage"
+                    },
+                    if n.id == "ob-mic-select" { "" } else { "auto" },
+                );
+                n.text = n
+                    .options
+                    .iter()
+                    .find(|o| o[0] == value)
+                    .or_else(|| n.options.first())
+                    .map(|o| o[1].clone())
+                    .unwrap_or_default();
+            }
+        }
+        if downloaded {
+            self.nodes.retain(|n| n.owner != "ob-model-btn");
+        }
+        if progress_text.is_none() {
+            // Close the gap the progress bar leaves in the model card.
+            let bottom = self
+                .nodes
+                .iter()
+                .find(|n| n.id == "ob-progress-text")
+                .map(|n| n.rect[1] + n.rect[3]);
+            if let (Some(bar), Some(bottom)) = (bar, bottom) {
+                let gap = bottom - (bar[1] - 12.0);
+                for n in &mut self.nodes {
+                    if n.classes == "ob-model" {
+                        n.rect[3] -= gap;
+                    } else if n.classes == "setting-hint" {
+                        n.rect[1] -= gap;
+                    }
+                }
+            }
+            self.nodes.retain(|n| {
+                !matches!(
+                    n.id.as_str(),
+                    "ob-progress" | "ob-progress-fill" | "ob-progress-text"
+                )
+            });
+        }
+    }
+    /// Back, Continue, and Exit setup.
+    unsafe fn setup_step(&mut self, id: &str) {
+        self.commit_edits();
+        self.state = get().snapshot();
+        let mut guide = self.setup();
+        match id {
+            "ob-exit" => {
+                get().change(|s| s.recording_hotkey = None);
+                guide.pause();
+            }
+            "ob-back" => guide.back(),
+            _ => {
+                if self.setup_blocker(&guide).is_some() {
+                    return;
+                }
+                // The engine switches only once it can transcribe, so leaving
+                // setup halfway never leaves a broken engine selected.
+                if guide.step_id() == "install" && self.state.mode() != guide.engine {
+                    get().action("mode-select", guide.engine.clone());
+                }
+                if guide.is_last() {
+                    self.memory.tab = "home".into();
+                }
+                guide.next();
+            }
+        }
+        let exited = guide.status == Status::Paused;
+        self.enter_setup(guide);
+        if exited {
+            get().status("Setup paused", false);
+        }
+    }
+    /// Saves the guide's state and shows its current step (or the app).
+    unsafe fn enter_setup(&mut self, guide: Onboarding) {
+        let step = guide.step_id();
+        let open = guide.is_open();
+        if open && step == "try" {
+            self.try_listening = false;
+            self.try_done = false;
+        }
+        if let Err(error) = get().set_setting(setup::KEY, guide.to_value()) {
+            get().status(&error, true);
+        }
+        self.state = get().snapshot();
+        self.hover.clear();
+        self.update(true);
+        let focus = if !open {
+            None
+        } else if step == "try" {
+            Some("ob-try-input")
+        } else if self.controls.iter().any(|c| c.hwnd == GetFocus()) {
+            None
+        } else {
+            Some("ob-next")
+        };
+        if let Some(c) = focus.and_then(|id| self.controls.iter().find(|c| c.id == id)) {
+            let _ = SetFocus(Some(c.hwnd));
+        }
+    }
     fn model_row(
         &mut self,
         status_id: &str,
@@ -1814,14 +2565,25 @@ impl Window {
         let loaded = self.state.ready.contains(loaded_key);
         let loading = key == "whisper" && self.state.busy.contains("whisper-load-btn");
         let downloading = self.state.busy.contains(action_id);
+        let pausable = key == "whisper";
+        let partial = if pausable && !downloaded && !downloading {
+            self.paused_fraction()
+        } else {
+            None
+        };
         let error = self.state.label(&format!("{key}-status-error"), "");
         let error_text = if downloaded && key == "whisper" {
             format!("✗ Load failed: {error}")
         } else {
             "✗ Download failed".into()
         };
+        let paused_text = partial
+            .map(|f| format!("Download paused at {:.0}%", f * 100.0))
+            .unwrap_or_default();
         let text = if !error.is_empty() {
             error_text.as_str()
+        } else if partial.is_some() {
+            paused_text.as_str()
         } else if downloading {
             if key == "whisper" {
                 "Downloading model…"
@@ -1844,18 +2606,25 @@ impl Window {
         let width = self.renderer.text_width(text, status.size, status.weight);
         let action = if downloaded && key == "whisper" {
             "whisper-load-btn"
+        } else if downloading && pausable {
+            "whisper-pause-btn"
         } else {
             action_id
         };
         let label = if downloaded {
             "Load Model"
+        } else if downloading {
+            "Pause"
+        } else if partial.is_some() {
+            "Resume Download"
         } else if key == "gec" && !error.is_empty() {
             "Retry Download"
         } else {
             "Download Model"
         };
         let button_width = self.renderer.text_width(label, 10.92, 600) + 28.0;
-        let has_button = !downloading && !loading && !loaded && (key == "whisper" || !downloaded);
+        let has_button =
+            (!downloading || pausable) && !loading && !loaded && (key == "whisper" || !downloaded);
         let base_bottom = status.rect[1] - 5.5625 + 27.0;
         let row_height = if has_button { 27.0 } else { 17.85 };
         let delta = row_height - 27.0 + if progress.is_some() { 23.12 } else { 0.0 };
@@ -1886,16 +2655,22 @@ impl Window {
                 }
                 if loading || downloading {
                     n.rect[0] += 16.0;
-                    n.rect[2] -= 16.0;
+                    if !has_button {
+                        n.rect[2] -= 16.0;
+                    }
                     n.wrap = n.rect[2];
                 }
             }
             if n.owner == action_id {
                 n.owner = action.into();
                 n.id = action.into();
-                n.rect[0] = 92.0 + width.min(404.0 - button_width - 10.0) + 10.0;
+                // Leave room for the spinner drawn before the status text.
+                n.rect[0] = 92.0
+                    + width.min(404.0 - button_width - 10.0)
+                    + 10.0
+                    + if loading || downloading { 16.0 } else { 0.0 };
                 n.rect[2] = button_width;
-                n.disabled = loading || downloading;
+                n.disabled = loading || downloading && !pausable;
                 if n.kind == "text" {
                     n.text = label.into();
                     n.rect[0] += 14.0;
@@ -1907,7 +2682,12 @@ impl Window {
         if downloading || loading {
             self.nodes.push(Node {
                 kind: "spinner".into(),
-                rect: [92.0, status.rect[1] - 3.0, 12.0, 12.0],
+                rect: [
+                    92.0,
+                    status.rect[1] - 3.0 + if has_button { 4.5625 } else { 0.0 },
+                    12.0,
+                    12.0,
+                ],
                 color: color(self.state.dark(), "ink"),
                 border: color(self.state.dark(), "rule"),
                 opacity: 1.0,
@@ -1918,7 +2698,7 @@ impl Window {
             self.nodes.retain(|n| n.owner != action);
         }
         if let Some((percent, label)) = progress {
-            let y = status.rect[1] - 4.5625 + 17.85 + 8.0;
+            let y = status.rect[1] - 5.5625 + row_height + 9.0;
             self.nodes
                 .push(self.rect([92.0, y + 4.56, 358.0, 6.0], "warm", "rule", 1.0, 3.0));
             self.nodes.push(self.rect(
@@ -2480,13 +3260,7 @@ impl Window {
                 | WS_TABSTOP
                 | WINDOW_STYLE(if is_edit {
                     ES_AUTOHSCROLL as u32
-                        | if n.password
-                            && !(if n.id == "apikey-input" {
-                                self.show_keys
-                            } else {
-                                self.show_summary_key
-                            })
-                        {
+                        | if n.password && !self.key_shown(&n.id) {
                             ES_PASSWORD as u32
                         } else {
                             0
@@ -2760,11 +3534,7 @@ impl Window {
                     .find(|c| c.id == n.owner)
                     .map(|c| read_text(c.hwnd))
                     .unwrap_or_else(|| self.field(&n.id));
-                n.password &= !(if n.id == "apikey-input" {
-                    self.show_keys
-                } else {
-                    self.show_summary_key
-                });
+                n.password &= !self.key_shown(&n.id);
             }
             if self
                 .controls
@@ -2899,6 +3669,43 @@ impl Window {
                 self.show_summary_key = !self.show_summary_key;
                 self.update(true);
             }
+            "ob-back" | "ob-next" | "ob-exit" => self.setup_step(id),
+            "setup-guide-btn" | "setup-resume-btn" => {
+                self.commit_edits();
+                let mut guide = self.setup();
+                guide.resume(&self.state.mode());
+                self.enter_setup(guide);
+            }
+            id if id.starts_with("ob-engine-") => {
+                let mut guide = self.setup();
+                guide.choose(&id["ob-engine-".len()..]);
+                self.enter_setup(guide);
+            }
+            id if id.starts_with("ob-feature-") => {
+                let mut guide = self.setup();
+                guide.complete();
+                self.memory.tab = id["ob-feature-".len()..].into();
+                self.enter_setup(guide);
+            }
+            "ob-model-btn" => get().action(
+                if self.state.busy.contains("whisper-download-btn") {
+                    "whisper-pause-btn"
+                } else {
+                    "whisper-download-btn"
+                },
+                String::new(),
+            ),
+            "ob-hotkey-btn" => get().action("hotkey-btn", String::new()),
+            "ob-chip-0" | "ob-chip-1" => {
+                let combo = if id == "ob-chip-0" {
+                    "Ctrl+Shift+Space"
+                } else {
+                    "Ctrl+Alt+Space"
+                };
+                if let Err(e) = get().register_shortcut("hotkey-btn", combo) {
+                    get().status(&e, true);
+                }
+            }
             id if id.starts_with("tab:") => {
                 self.commit_edits();
                 self.memory.tab = id[4..].into();
@@ -3003,6 +3810,18 @@ impl Window {
             self.click("dict-add-btn");
             return true;
         }
+        if msg.wParam.0 == VK_RETURN.0 as usize
+            && self.controls.iter().any(|c| {
+                c.hwnd == msg.hwnd
+                    && matches!(
+                        c.id.as_str(),
+                        "ob-groq-key" | "ob-azure-endpoint" | "ob-azure-key"
+                    )
+            })
+        {
+            self.click("ob-next");
+            return true;
+        }
         if msg.wParam.0 == VK_RETURN.0 as usize {
             if let Some(id) = self
                 .controls
@@ -3077,17 +3896,10 @@ impl Window {
         let values: Vec<_> = self
             .controls
             .iter()
-            .filter(|c| c.kind == "edit" && c.dirty && c.id != "dict-input")
-            .map(|c| {
-                (
-                    if c.id == "apikey-input" {
-                        c.draft.clone()
-                    } else {
-                        c.id.clone()
-                    },
-                    read_text(c.hwnd),
-                )
+            .filter(|c| {
+                c.kind == "edit" && c.dirty && c.id != "dict-input" && c.id != "ob-try-input"
             })
+            .map(|c| (c.draft.clone(), read_text(c.hwnd)))
             .collect();
         for (id, value) in values {
             self.save_edit(&id, value);
@@ -3265,14 +4077,14 @@ unsafe extern "system" fn window_proc(
                         .map(|o| o[0].clone())
                         .unwrap_or_default();
                     w.commit_edits();
-                    get().action(&id, value);
+                    get().action(alias(&id), value);
                 } else if kind == "edit" && code == EN_CHANGE as u32 {
                     w.controls[index].dirty = true;
                     w.update(false);
                 } else if kind == "edit" && code == EN_KILLFOCUS as u32 && w.controls[index].dirty {
                     let value = read_text(control);
                     let scoped = w.controls[index].draft.clone();
-                    if id == "dict-input" {
+                    if id == "dict-input" || id == "ob-try-input" {
                         w.memory.drafts.insert(scoped, value);
                     } else {
                         w.save_edit(&scoped, value);
@@ -3612,6 +4424,15 @@ unsafe fn blit(dc: HDC, pixels: &[u8], width: u32, height: u32, region: [i32; 4]
         DIB_RGB_COLORS,
         SRCCOPY,
     );
+}
+/// Setup-guide controls that edit the same values as their Settings twins.
+fn alias(id: &str) -> &str {
+    match id {
+        "ob-mic-select" => "mic-select",
+        "ob-lang-select" => "live-lang-select",
+        "ob-azure-endpoint" => "azure-endpoint-input",
+        _ => id,
+    }
 }
 fn color(dark: bool, name: &str) -> String {
     match (dark, name) {
@@ -4014,7 +4835,10 @@ impl Renderer {
                 if hovered
                     && (n.kind == "edit"
                         || n.kind == "select"
-                        || n.classes.contains("modal-btn-secondary"))
+                        || n.classes.contains("modal-btn-secondary")
+                        || n.classes.contains("ob-btn-secondary")
+                        || n.classes.contains("ob-link-btn")
+                        || n.classes.contains("ob-card") && !n.classes.contains("selected"))
                 {
                     bg = parse_color(&color(dark, "hover"));
                     border = parse_color(&color(dark, "rule-hover"));
@@ -4085,11 +4909,17 @@ impl Renderer {
                         "rgba(139, 68, 68, 0.08)"
                     });
                 }
-                if hovered && n.classes.contains("whisper-action-btn") {
+                if hovered
+                    && (n.classes.contains("whisper-action-btn")
+                        || n.classes.contains("ob-btn-primary"))
+                {
                     bg = parse_color(if dark { "#ffffff" } else { "#1a1a1a" });
                 }
                 if hovered
-                    && (n.classes.contains("item-copy") || n.classes.contains("summary-copy"))
+                    && (n.classes.contains("item-copy")
+                        || n.classes.contains("summary-copy")
+                        || n.classes.contains("ob-chip")
+                        || n.classes.contains("ob-feature-btn"))
                 {
                     border = parse_color(&color(dark, "faint"));
                 }
@@ -4233,7 +5063,11 @@ impl Renderer {
                 }
                 let mut color = parse_color(&n.color);
                 if hovered
-                    && (n.classes.contains("item-copy") || n.classes.contains("summary-copy"))
+                    && (n.classes.contains("item-copy")
+                        || n.classes.contains("summary-copy")
+                        || n.classes.contains("ob-chip")
+                        || n.classes.contains("ob-feature-btn")
+                        || n.classes.contains("ob-exit"))
                 {
                     color = parse_color(&crate::native_ui::color(dark, "ink"));
                 }

@@ -124,6 +124,13 @@ def main():
             page.locator('#titlebar-close').click()
             capture(f'{theme}:modal',True)
             page.locator('#modal-cancel').click()
+            # Setup guide: one scene per step, plus the chosen engine where it changes the step.
+            page.evaluate("document.querySelector('.app').classList.add('onboarding-open')")
+            for step in ('model','install','microphone','hotkey','try','features'):
+                for engine in (('groq','azure-mai','local') if step in ('model','install') else ('',)):
+                    page.evaluate('''([step,engine])=>{for(const s of document.querySelectorAll('.ob-step'))s.classList.toggle('active',s.dataset.step===step);for(const c of document.querySelectorAll('.ob-card'))c.classList.toggle('selected',c.dataset.engine===engine);for(const p of document.querySelectorAll('.ob-install'))p.classList.toggle('active',p.dataset.engine===engine);}''',[step,engine])
+                    capture(f'{theme}:onboarding:{step}'+(f':{engine}' if engine else ''),True)
+            page.evaluate("document.querySelector('.app').classList.remove('onboarding-open')")
             entries=[{'index':i+1,'start':i*3.0,'end':i*3.0+2.5,'text':text} for i,text in enumerate(['Welcome to Annotate.','This is a native Windows transcription app.','Vulkan runs the local model on your GPU.'])]
             srt='\n\n'.join(f"{e['index']}\n00:00:{int(e['start']):02d},000 --> 00:00:{int(e['end']):02d},500\n{e['text']}" for e in entries)
             page.locator('[data-tab=subtitling]').click()
