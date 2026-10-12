@@ -1232,11 +1232,11 @@ impl Window {
                         } else {
                             "hotkey-btn"
                         }) {
-                        "Press a key combo…".into()
+                        "Press a shortcut…".into()
                     } else {
                         self.state.setting(
                             if dict { "dictHotkey" } else { "hotkey" },
-                            "Click to record",
+                            "Click to set",
                         )
                     };
                     n.rect[0] = 92.0;
@@ -1647,7 +1647,7 @@ impl Window {
                 n.text = if mode == "azure-mai" {
                     "FOUNDRY API KEY"
                 } else {
-                    "API KEY"
+                    "GROQ API KEY"
                 }
                 .into();
             }

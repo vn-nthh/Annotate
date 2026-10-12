@@ -85,7 +85,7 @@ def main():
           el('gec-status-text').textContent='Model not downloaded (~105 MB)';show('gec-download-btn',true);
           for(const key of ['ffmpeg','vad']){el('sub-dep-'+key+'-status').textContent='Not installed';show('sub-'+key+'-download-btn',true);}
           for(const tab of document.querySelectorAll('[data-tab]'))tab.addEventListener('click',()=>{for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b===tab);for(const p of document.querySelectorAll('.tab-panel'))p.classList.toggle('active',p.id==='tab-'+tab.dataset.tab);});
-          const mode=()=>{const value=el('mode-select').value;show('section-apikey',value!=='local');show('section-azure-config',value==='azure-mai');show('section-local-whisper',value==='local');el('apikey-label').textContent=value==='azure-mai'?'Foundry API Key':'API Key';el('apikey-input').placeholder=value==='azure-mai'?'Paste Foundry API key':'Paste Groq API key';};
+          const mode=()=>{const value=el('mode-select').value;show('section-apikey',value!=='local');show('section-azure-config',value==='azure-mai');show('section-local-whisper',value==='local');el('apikey-label').textContent=value==='azure-mai'?'Foundry API Key':'Groq API Key';el('apikey-input').placeholder=value==='azure-mai'?'Paste Foundry API key':'Paste Groq API key';};
           el('mode-select').addEventListener('change',mode);mode();
           el('titlebar-close').addEventListener('click',()=>show('close-modal',true));el('modal-cancel').addEventListener('click',()=>show('close-modal',false));
         }''')
