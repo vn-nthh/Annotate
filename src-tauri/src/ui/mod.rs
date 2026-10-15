@@ -1,6 +1,7 @@
 //! GPUI front end. Everything here runs on the main thread; other threads reach
 //! it through the functions below, which post to a channel the UI drains.
 mod assets;
+mod capture;
 mod components;
 mod dictionary;
 mod home;
@@ -82,6 +83,18 @@ impl Global for UiState {}
 /// Runs GPUI until the app quits. `start` initializes the core and platform
 /// services once the UI can receive their events.
 pub fn run(start: impl FnOnce() -> Result<(), String> + 'static) -> Result<(), String> {
+    run_with(move |cx| {
+        start()?;
+        window::open(cx, false);
+        Ok(())
+    })
+}
+
+pub fn capture(directory: std::path::PathBuf) -> Result<(), String> {
+    capture::run(directory)
+}
+
+fn run_with(start: impl FnOnce(&mut App) -> Result<(), String> + 'static) -> Result<(), String> {
     let (sender, mut receiver) = futures_channel::mpsc::unbounded();
     SENDER
         .set(sender)
@@ -102,11 +115,6 @@ pub fn run(start: impl FnOnce() -> Result<(), String> + 'static) -> Result<(), S
                 },
             });
             overlay::install(cx);
-            if let Err(error) = start() {
-                *result.borrow_mut() = Err(error);
-                cx.quit();
-                return;
-            }
             cx.spawn(async move |cx| {
                 while let Some(event) = receiver.next().await {
                     if cx.update(|cx| handle(event, cx)).is_err() {
@@ -115,7 +123,10 @@ pub fn run(start: impl FnOnce() -> Result<(), String> + 'static) -> Result<(), S
                 }
             })
             .detach();
-            window::open(cx, false);
+            if let Err(error) = start(cx) {
+                *result.borrow_mut() = Err(error);
+                cx.quit();
+            }
         });
     outcome.replace(Ok(()))
 }

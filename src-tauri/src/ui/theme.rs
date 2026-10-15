@@ -6,7 +6,7 @@ pub const FONT: &str = "Satoshi";
 #[cfg(target_os = "macos")]
 pub const MONO: &str = "Menlo";
 #[cfg(not(target_os = "macos"))]
-pub const MONO: &str = "Consolas";
+pub const MONO: &str = "Cascadia Code";
 
 /// The reference CSS uses `html { font-size: 14px }`; sizes are in rem.
 pub fn rem(value: f32) -> Pixels {

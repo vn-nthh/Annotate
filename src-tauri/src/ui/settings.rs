@@ -174,7 +174,10 @@ impl MainWindow {
                     .gap(px(10.))
                     .min_h(px(27.))
                     .when(downloading || loading, |row| {
-                        row.child(ui::spinner(SharedString::from(format!("{key}-spinner")), &t))
+                        row.child(ui::spinner(
+                            SharedString::from(format!("{key}-spinner")),
+                            &t,
+                        ))
                     })
                     .child(
                         div()
@@ -271,137 +274,155 @@ impl MainWindow {
         };
         let quiet = |id: &'static str, label: String, danger: bool| {
             let button = ui::button(id, label.to_uppercase(), Kind::Quiet);
-            let button = if danger { button.danger_hover() } else { button };
+            let button = if danger {
+                button.danger_hover()
+            } else {
+                button
+            };
             button
                 .render(&t)
                 .on_click(cx.listener(move |view, _, window, cx| view.click(id, window, cx)))
         };
-        let body = if s.auth_waiting {
-            div()
-                .flex()
-                .flex_col()
-                .child(description("Finish signing in using your browser…"))
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(quiet("sync-reopen-btn", "Open Again".into(), false))
-                        .child(quiet("sync-cancel-btn", "Cancel".into(), true)),
-                )
-        } else if let Some(user) = &s.user {
-            let name = user["name"].as_str().unwrap_or("User").to_owned();
-            let email = user["email"].as_str().unwrap_or("");
-            let email = email.split_once('@').map_or_else(
-                || email.to_owned(),
-                |(name, domain)| format!("{}***@{domain}", name.chars().take(3).collect::<String>()),
-            );
-            let busy = s.busy.contains("sync-now-btn");
-            let sync_label = s.label("sync-now-text", "Sync Now");
-            let synced = sync_label.eq_ignore_ascii_case("synced");
-            div()
-                .flex()
-                .flex_col()
-                .gap(px(10.))
-                .child(
-                    div()
-                        .id("sync-user")
-                        .flex()
-                        .items_center()
-                        .gap(px(10.))
-                        .py(px(10.))
-                        .px(px(12.))
-                        .rounded(px(RADIUS_MD))
-                        .bg(t.warm)
-                        .border_1()
-                        .border_color(gpui::transparent_black())
-                        .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
-                        .when_some(self.avatar(), |row, avatar| {
-                            row.child(img(avatar).size(px(28.)).flex_none().rounded_full())
-                        })
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .flex_1()
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .text_size(rem(0.82))
-                                        .font_weight(SEMIBOLD)
-                                        .line_height(rem(0.82 * 1.3))
-                                        .text_color(t.ink)
-                                        .whitespace_nowrap()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(name),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(rem(0.68))
-                                        .line_height(rem(0.68 * 1.3))
-                                        .text_color(t.faint)
-                                        .whitespace_nowrap()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .child(email),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .gap(px(6.))
-                        .child(
-                            ui::button("sync-now-btn", sync_label.to_uppercase(), Kind::Quiet)
-                                .disabled(busy)
-                                .render(&t)
-                                .gap(px(5.))
-                                .when(busy, |b| b.opacity(1.).child(ui::spinner("sync-spinner", &t)))
-                                .when(synced, |b| b.text_color(t.ink).border_color(t.ink))
-                                .on_click(cx.listener(|view, _, window, cx| {
-                                    view.click("sync-now-btn", window, cx)
-                                })),
-                        )
-                        .child(quiet("sync-signout-btn", "Sign Out".into(), true)),
-                )
-        } else {
-            div()
-                .flex()
-                .flex_col()
-                .child(description(
-                    "Sync your dictionary and history across devices with Google Drive.",
-                ))
-                .child(
-                    ui::focusable(
+        let body =
+            if s.auth_waiting {
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(description("Finish signing in using your browser…"))
+                    .child(
                         div()
-                            .id("sync-signin-btn")
-                            .w_full()
+                            .flex()
+                            .gap(px(6.))
+                            .child(quiet("sync-reopen-btn", "Open Again".into(), false))
+                            .child(quiet("sync-cancel-btn", "Cancel".into(), true)),
+                    )
+            } else if let Some(user) = &s.user {
+                let name = user["name"].as_str().unwrap_or("User").to_owned();
+                let email = user["email"].as_str().unwrap_or("");
+                let email = email.split_once('@').map_or_else(
+                    || email.to_owned(),
+                    |(name, domain)| {
+                        format!("{}***@{domain}", name.chars().take(3).collect::<String>())
+                    },
+                );
+                let busy = s.busy.contains("sync-now-btn");
+                let sync_label = s.label("sync-now-text", "Sync Now");
+                let synced = sync_label.eq_ignore_ascii_case("synced");
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .child(
+                        div()
+                            .id("sync-user")
                             .flex()
                             .items_center()
-                            .justify_center()
-                            .gap(px(8.))
+                            .gap(px(10.))
                             .py(px(10.))
-                            .px(px(14.))
+                            .px(px(12.))
                             .rounded(px(RADIUS_MD))
                             .bg(t.warm)
-                            .border(px(1.5))
-                            .border_color(t.rule)
-                            .text_size(rem(0.88))
-                            .font_weight(MEDIUM)
-                            .text_color(t.ink)
-                            .cursor_pointer()
-                            .hover(move |s| {
-                                s.bg(t.hover).border_color(t.rule_hover).shadow(lift(&t))
+                            .border_1()
+                            .border_color(gpui::transparent_black())
+                            .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
+                            .when_some(self.avatar(), |row, avatar| {
+                                row.child(
+                                    img(avatar)
+                                        .size(px(28.))
+                                        .min_w(px(28.))
+                                        .max_w(px(28.))
+                                        .flex_none()
+                                        .rounded_full()
+                                        .object_fit(gpui::ObjectFit::Cover),
+                                )
                             })
-                            .child(img(super::assets::google()).size(px(18.)).flex_none())
-                            .child("Sign in with Google"),
-                        &t,
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(
+                                        div()
+                                            .text_size(rem(0.82))
+                                            .font_weight(SEMIBOLD)
+                                            .line_height(rem(0.82 * 1.3))
+                                            .text_color(t.ink)
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(name),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(rem(0.68))
+                                            .line_height(rem(0.68 * 1.3))
+                                            .text_color(t.faint)
+                                            .whitespace_nowrap()
+                                            .overflow_hidden()
+                                            .text_ellipsis()
+                                            .child(email),
+                                    ),
+                            ),
                     )
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        view.click("sync-signin-btn", window, cx)
-                    })),
-                )
-        };
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(6.))
+                            .child(
+                                ui::button("sync-now-btn", sync_label.to_uppercase(), Kind::Quiet)
+                                    .disabled(busy)
+                                    .render(&t)
+                                    .gap(px(5.))
+                                    .when(busy, |b| {
+                                        b.opacity(1.).child(ui::spinner("sync-spinner", &t))
+                                    })
+                                    .when(synced, |b| b.text_color(t.ink).border_color(t.ink))
+                                    .on_click(cx.listener(|view, _, window, cx| {
+                                        view.click("sync-now-btn", window, cx)
+                                    })),
+                            )
+                            .child(quiet("sync-signout-btn", "Sign Out".into(), true)),
+                    )
+            } else {
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(description(
+                        "Sync your dictionary and history across devices with Google Drive.",
+                    ))
+                    .child(
+                        ui::focusable(
+                            div()
+                                .id("sync-signin-btn")
+                                .w_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .gap(px(8.))
+                                .py(px(10.))
+                                .px(px(14.))
+                                .rounded(px(RADIUS_MD))
+                                .bg(t.warm)
+                                .border(px(1.5))
+                                .border_color(t.rule)
+                                .text_size(rem(0.88))
+                                .line_height(rem(0.88 * 1.35))
+                                .font_weight(MEDIUM)
+                                .text_color(t.ink)
+                                .cursor_pointer()
+                                .hover(move |s| {
+                                    s.bg(t.hover).border_color(t.rule_hover).shadow(lift(&t))
+                                })
+                                .child(img(super::assets::google()).size(px(18.)).flex_none())
+                                .child("Sign in with Google"),
+                            &t,
+                        )
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.click("sync-signin-btn", window, cx)
+                        })),
+                    )
+            };
         group()
             .child(ui::label("Cloud Sync", &t))
             .child(div().mt(px(2.)).child(body))
@@ -443,7 +464,7 @@ impl MainWindow {
             } else {
                 SEMIBOLD
             })
-            .line_height(rem(0.9 * 1.25))
+            .line_height(rem(0.9 * 1.35))
             .text_color(if value.is_empty() || recording {
                 t.light
             } else {
@@ -466,11 +487,12 @@ impl MainWindow {
                         .shadow(lift(&t))
                 })
             })
-            .when(recording, |b| b.bg(t.hover).border_color(accent).text_color(t.ink))
+            .when(recording, |b| {
+                b.bg(t.hover).border_color(accent).text_color(t.ink)
+            })
             .child(text);
-        ui::focusable(base, &t).on_click(cx.listener(move |view, _, window, cx| {
-            view.click(button, window, cx)
-        }))
+        ui::focusable(base, &t)
+            .on_click(cx.listener(move |view, _, window, cx| view.click(button, window, cx)))
     }
 
     pub(super) fn settings(
@@ -526,7 +548,7 @@ impl MainWindow {
             .pt(px(24.))
             .px(px(24.))
             .pb(px(16.))
-            .child(header("Settings", None, &t).mb(px(2.)))
+            .child(header("Settings", None, &t))
             .child(group().child(ui::label("Microphone", &t)).child(self.select(
                 "mic-select",
                 mics,
@@ -677,6 +699,7 @@ impl MainWindow {
                                         .border_1()
                                         .border_color(t.rule)
                                         .text_size(rem(0.8))
+                                        .line_height(rem(0.8 * 1.35))
                                         .font_weight(MEDIUM)
                                         .text_color(t.light)
                                         .cursor_pointer()

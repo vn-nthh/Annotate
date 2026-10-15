@@ -202,7 +202,12 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
@@ -370,6 +375,18 @@ impl TextInput {
     }
 }
 
+/// Byte offset of a UTF-16 offset in `text`, clamped to a char boundary.
+fn utf16_to_utf8(text: &str, offset: usize) -> usize {
+    let mut utf16 = 0;
+    for (index, ch) in text.char_indices() {
+        if utf16 >= offset {
+            return index;
+        }
+        utf16 += ch.len_utf16();
+    }
+    text.len()
+}
+
 impl EntityInputHandler for TextInput {
     fn text_for_range(
         &mut self,
@@ -451,10 +468,14 @@ impl EntityInputHandler for TextInput {
         } else {
             self.marked_range = None;
         }
+        // The IME's selection is relative to the composition string itself.
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|range_utf16| self.range_from_utf16(range_utf16))
-            .map(|new_range| new_range.start + range.start..new_range.end + range.start)
+            .map(|range_utf16| {
+                let start = utf16_to_utf8(new_text, range_utf16.start);
+                let end = utf16_to_utf8(new_text, range_utf16.end);
+                range.start + start..range.start + end.max(start)
+            })
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.edited(cx);
     }
@@ -600,7 +621,8 @@ impl Element for TextElement {
             .shape_line(display_text, font_size, &runs, None);
 
         let (selected, cursor, content_empty) = (
-            input.to_display(input.selected_range.start)..input.to_display(input.selected_range.end),
+            input.to_display(input.selected_range.start)
+                ..input.to_display(input.selected_range.end),
             input.to_display(input.cursor_offset()),
             input.content.is_empty(),
         );
@@ -644,11 +666,10 @@ impl Element for TextElement {
                         point(left + line.x_for_index(selected.start), bounds.top()),
                         point(left + line.x_for_index(selected.end), bounds.bottom()),
                     ),
-                    self.theme.focus_ring.opacity(1.0).alpha(if self.theme.dark {
-                        0.25
-                    } else {
-                        0.18
-                    }),
+                    self.theme
+                        .focus_ring
+                        .opacity(1.0)
+                        .alpha(if self.theme.dark { 0.25 } else { 0.18 }),
                 )),
                 None,
             )
@@ -742,6 +763,14 @@ impl Focusable for TextInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn composition_selection_maps_within_the_composed_text() {
+        assert_eq!(super::utf16_to_utf8("你", 1), 3);
+        assert_eq!(super::utf16_to_utf8("a😀b", 3), 5);
+        assert_eq!(super::utf16_to_utf8("a😀b", 9), 6);
+        assert_eq!(super::utf16_to_utf8("", 2), 0);
+    }
+
     #[test]
     fn masked_offsets_round_trip_through_multibyte_text() {
         let content = "aé😀b";

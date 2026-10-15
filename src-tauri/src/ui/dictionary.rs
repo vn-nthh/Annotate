@@ -55,7 +55,9 @@ impl MainWindow {
                             &t,
                         )
                         .flex_none()
-                        .on_click(cx.listener(move |view, _, window, cx| view.click(&id, window, cx))),
+                        .on_click(
+                            cx.listener(move |view, _, window, cx| view.click(&id, window, cx)),
+                        ),
                     )
             })
             .collect();
@@ -67,7 +69,9 @@ impl MainWindow {
                     .text_size(rem(0.82))
                     .line_height(rem(0.82 * 1.5))
                     .text_color(t.light)
-                    .child("Add key terms to improve transcription accuracy for supported engines."),
+                    .child(
+                        "Add key terms to improve transcription accuracy for supported engines.",
+                    ),
             )
             .child(
                 div()
@@ -75,12 +79,12 @@ impl MainWindow {
                     .flex_none()
                     .gap(px(8.))
                     .mb(px(16.))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.text_field(&self.inputs.dict.clone(), None, window, cx)),
-                    )
+                    .child(div().flex_1().min_w_0().child(self.text_field(
+                        &self.inputs.dict.clone(),
+                        None,
+                        window,
+                        cx,
+                    )))
                     .child(
                         ui::button("dict-add-btn", "Add", Kind::Primary)
                             .render(&t)
@@ -105,7 +109,12 @@ impl MainWindow {
                             .child(if rows.is_empty() {
                                 empty("No terms added yet", &t)
                             } else {
-                                div().flex().flex_col().gap(px(4.)).pr(px(6.)).children(rows)
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.))
+                                    .pr(px(6.))
+                                    .children(rows)
                             }),
                     )
                     .children(self.scrollbar("dictionary", cx)),

@@ -1,8 +1,8 @@
 //! Building blocks shared by the panels. Sizes follow `src/index.css`.
 use super::theme::{rem, Theme, MEDIUM, NORMAL, SEMIBOLD};
 use gpui::{
-    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyView, App, Div,
-    ElementId, Hsla, SharedString, Stateful, Transformation, Window,
+    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyView, App, Div, ElementId,
+    Hsla, SharedString, Stateful, Transformation, Window,
 };
 use std::time::Duration;
 
@@ -10,11 +10,22 @@ pub const RADIUS_SM: f32 = 6.0;
 pub const RADIUS_MD: f32 = 10.0;
 pub const RADIUS_LG: f32 = 14.0;
 
-/// Visible keyboard focus: the CSS `0 0 0 3px var(--focus-ring)` halo, drawn as
-/// a border color change because GPUI has no outer outline.
+/// Visible keyboard focus: the CSS `0 0 0 3px var(--focus-ring)` halo. Bordered
+/// controls also darken their border, as `:focus` does in the reference.
 pub fn focusable(element: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
-    let ring = theme.faint;
-    element.tab_index(0).focus(move |s| s.border_color(ring))
+    let (ring, border) = (theme.focus_ring, theme.faint);
+    element
+        .tab_index(0)
+        .focus(move |s| s.border_color(border).shadow(focus_ring(ring)))
+}
+
+pub fn focus_ring(color: Hsla) -> Vec<gpui::BoxShadow> {
+    vec![gpui::BoxShadow {
+        color,
+        offset: gpui::point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(3.),
+    }]
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -31,6 +42,10 @@ pub enum Kind {
     Quiet,
     /// Text-only (`.modal-cancel`, `.history-clear`, `.ob-exit`).
     Link,
+    /// The grey Summarize button (`.sub-summarize-btn`).
+    Summarize,
+    /// New File (`.sub-new-btn`): `warm` with a hairline border.
+    Plain,
 }
 
 pub struct Button {
@@ -70,8 +85,8 @@ impl Button {
             .items_center()
             .justify_center()
             .whitespace_nowrap()
-            .border_1()
-            .border_color(gpui::transparent_black())
+            // Form controls use the font's normal line height (1.35 for Satoshi).
+            .line_height(gpui::relative(1.35))
             .child(self.label);
         let base = match self.kind {
             Kind::Primary => base
@@ -109,6 +124,7 @@ impl Button {
                 .px(px(10.))
                 .py(px(4.))
                 .rounded(px(RADIUS_SM))
+                .border_1()
                 .border_color(t.rule)
                 .text_color(t.light)
                 .text_size(rem(0.75))
@@ -120,6 +136,7 @@ impl Button {
                 .px(px(10.))
                 .py(px(4.))
                 .rounded(px(RADIUS_SM))
+                .border_1()
                 .border_color(t.rule)
                 .text_color(t.faint)
                 .text_size(rem(0.72))
@@ -134,6 +151,30 @@ impl Button {
                     } else {
                         b.hover(move |s| s.text_color(t.ink).border_color(t.rule_hover).bg(t.warm))
                     }
+                }),
+            Kind::Summarize => base
+                .px(px(16.))
+                .py(px(10.))
+                .rounded(px(RADIUS_MD))
+                .bg(t.summarize)
+                .text_color(t.on_primary)
+                .text_size(rem(0.82))
+                .font_weight(SEMIBOLD)
+                .when(!self.disabled, |b| {
+                    b.hover(move |s| s.bg(t.summarize_hover))
+                }),
+            Kind::Plain => base
+                .px(px(18.))
+                .py(px(10.))
+                .rounded(px(RADIUS_MD))
+                .when(!t.dark, |b| b.bg(t.warm))
+                .border_1()
+                .border_color(t.rule)
+                .text_color(t.ink)
+                .text_size(rem(0.82))
+                .font_weight(MEDIUM)
+                .when(!self.disabled, |b| {
+                    b.hover(move |s| s.border_color(t.faint))
                 }),
             Kind::Link => base
                 .px(px(8.))
@@ -195,15 +236,13 @@ pub fn toggle(id: impl Into<ElementId>, checked: bool, theme: &Theme) -> Statefu
             .w(px(44.))
             .h(px(24.))
             .rounded(px(12.))
-            .border_1()
-            .border_color(gpui::transparent_black())
             .bg(if checked { t.ink } else { t.rule })
             .cursor_pointer()
             .child(
                 div()
                     .absolute()
-                    .top(px(2.))
-                    .left(px(knob_left - 1.))
+                    .top(px(3.))
+                    .left(px(knob_left))
                     .size(px(18.))
                     .rounded_full()
                     .bg(t.paper)
@@ -312,5 +351,9 @@ pub fn tooltip(
 
 /// An icon tinted with `color`.
 pub fn icon(path: &'static str, size: f32, color: Hsla) -> gpui::Svg {
-    svg().path(path).size(px(size)).flex_none().text_color(color)
+    svg()
+        .path(path)
+        .size(px(size))
+        .flex_none()
+        .text_color(color)
 }

@@ -17,7 +17,7 @@ pub fn header(title: &'static str, count: Option<usize>, theme: &Theme) -> Div {
             div()
                 .text_size(rem(1.2))
                 .font_weight(SEMIBOLD)
-                .line_height(rem(1.2 * 1.3))
+                .line_height(rem(1.2 * 1.5))
                 .text_color(t.ink)
                 .child(title),
         )
@@ -94,7 +94,7 @@ pub fn row_action(
             .when(filled, |b| b.bg(t.paper))
             .text_size(rem(0.62))
             .font_weight(MEDIUM)
-            .line_height(rem(0.62 * 1.5))
+            .line_height(rem(0.62 * 1.35))
             .text_color(t.faint)
             .cursor_pointer()
             .opacity(0.)
@@ -110,11 +110,15 @@ pub fn row_action(
             .child(label),
         theme,
     )
-    .focus(|s| s.opacity(1.))
+    .focus(move |s| s.opacity(1.).border_color(t.faint))
 }
 
 impl MainWindow {
-    pub(super) fn home(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    pub(super) fn home(
+        &mut self,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let t = self.theme;
         let scroll = self.scroll_handle("home");
         let entries = &self.state.data.data.history.entries;
@@ -175,9 +179,9 @@ impl MainWindow {
                                     &t,
                                 )
                                 .when(copied, |b| b.opacity(1.))
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.click(&copy_id, window, cx)
-                                })),
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| view.click(&copy_id, window, cx),
+                                )),
                             )
                             .child({
                                 let id = format!("history-remove:{index}");
@@ -190,9 +194,9 @@ impl MainWindow {
                                     group,
                                     &t,
                                 )
-                                .on_click(cx.listener(move |view, _, window, cx| {
-                                    view.click(&id, window, cx)
-                                }))
+                                .on_click(cx.listener(
+                                    move |view, _, window, cx| view.click(&id, window, cx),
+                                ))
                             }),
                     )
             })
@@ -214,7 +218,12 @@ impl MainWindow {
                             .child(if rows.is_empty() {
                                 empty("No transcriptions yet", &t)
                             } else {
-                                div().flex().flex_col().gap(px(6.)).pr(px(6.)).children(rows)
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(6.))
+                                    .pr(px(6.))
+                                    .children(rows)
                             }),
                     )
                     .children(self.scrollbar("home", cx)),

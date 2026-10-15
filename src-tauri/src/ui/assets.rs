@@ -16,8 +16,21 @@ macro_rules! icons {
     };
 }
 icons!(
-    "home", "dictionary", "subtitles", "settings", "resume", "minimize", "close", "file",
-    "chevron", "eye", "external", "check", "duplicate", "ring", "arc",
+    "home",
+    "dictionary",
+    "subtitles",
+    "settings",
+    "resume",
+    "minimize",
+    "close",
+    "file",
+    "chevron",
+    "eye",
+    "external",
+    "check",
+    "duplicate",
+    "ring",
+    "arc",
 );
 
 pub struct Assets;

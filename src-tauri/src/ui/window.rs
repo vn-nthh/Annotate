@@ -7,10 +7,9 @@ use super::UiState;
 use crate::native_core::{get, State};
 use crate::native_onboarding::{self as setup, Onboarding};
 use gpui::{
-    actions, anchored, deferred, div, img, point, prelude::*, px, size, AnimationExt, App,
-    Bounds, Context, Focusable,
-    Corner, Div, Entity, FocusHandle, Global, KeyBinding, KeyDownEvent, MouseButton,
-    ScrollHandle, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
+    actions, anchored, deferred, div, img, point, prelude::*, px, size, AnimationExt, App, Bounds,
+    Context, Corner, Div, Entity, FocusHandle, Focusable, Global, KeyBinding, KeyDownEvent,
+    MouseButton, ScrollHandle, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
     WindowControlArea, WindowHandle, WindowKind, WindowOptions,
 };
 use std::{collections::HashMap, time::Instant};
@@ -60,11 +59,45 @@ pub struct MainWindow {
     pub inputs: Inputs,
     /// The engine whose key the Settings API key field is showing.
     api_key_mode: String,
+    /// Unsaved API key edits for the engines not currently shown.
+    api_drafts: HashMap<String, String>,
     pub scroll: HashMap<&'static str, ScrollHandle>,
     pub drag: Option<(&'static str, f32, f32)>,
     /// The decoded profile photo, kept while the same bytes are in state.
-    pub avatar_cache: std::cell::RefCell<Option<(std::sync::Arc<Vec<u8>>, std::sync::Arc<gpui::Image>)>>,
+    pub avatar_cache:
+        std::cell::RefCell<Option<(std::sync::Arc<Vec<u8>>, std::sync::Arc<gpui::Image>)>>,
     root_focus: FocusHandle,
+    /// Tray, Quit, and Cancel in the close prompt; focus stays among them.
+    modal_focus: [FocusHandle; 3],
+}
+
+/// Opens an unfocused window at `origin` for reference captures.
+pub fn open_at(
+    cx: &mut App,
+    origin: gpui::Point<gpui::Pixels>,
+) -> Option<WindowHandle<MainWindow>> {
+    let options = WindowOptions {
+        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+            origin,
+            size(px(WIDTH), px(HEIGHT)),
+        ))),
+        titlebar: Some(TitlebarOptions {
+            title: Some("Annotate capture".into()),
+            appears_transparent: true,
+            traffic_light_position: None,
+        }),
+        focus: false,
+        is_resizable: false,
+        ..Default::default()
+    };
+    let handle = cx
+        .open_window(options, |window, cx| {
+            crate::platform::move_offscreen(window);
+            cx.new(|cx| MainWindow::new(window, cx))
+        })
+        .ok()?;
+    cx.global_mut::<UiState>().main = Some(handle);
+    Some(handle)
 }
 
 pub fn open(cx: &mut App, settings: bool) {
@@ -242,6 +275,7 @@ impl MainWindow {
         let memory = std::mem::take(&mut cx.global_mut::<UiState>().memory);
         let mut view = Self {
             api_key_mode: state.mode(),
+            api_drafts: HashMap::new(),
             state,
             theme,
             tab: if memory.tab.is_empty() {
@@ -262,10 +296,22 @@ impl MainWindow {
             drag: None,
             avatar_cache: Default::default(),
             root_focus: cx.focus_handle(),
+            modal_focus: [cx.focus_handle(), cx.focus_handle(), cx.focus_handle()],
         };
         view.fill_inputs(cx);
         for (id, draft) in memory.drafts {
-            if let Some(input) = view.input_by_id(&id) {
+            if let Some(mode) = id.strip_prefix("api_key:") {
+                if mode != view.api_key_mode {
+                    view.api_drafts.insert(mode.to_owned(), draft);
+                    continue;
+                }
+            }
+            let id = if id.starts_with("api_key:") {
+                "api_key"
+            } else {
+                &id
+            };
+            if let Some(input) = view.input_by_id(id) {
                 input.update(cx, |input, cx| {
                     input.set_text(draft, cx);
                     input.dirty = true;
@@ -277,6 +323,47 @@ impl MainWindow {
             view.focus_setup(window, cx);
         }
         view
+    }
+
+    /// Shows a fixed state without reading the core (reference captures).
+    pub fn show_scene(
+        &mut self,
+        state: State,
+        tab: &str,
+        modal: bool,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.theme = Theme::new(state.dark());
+        cx.set_global(CurrentTheme(self.theme));
+        self.api_key_mode = state.mode();
+        self.state = state;
+        self.tab = tab.into();
+        self.modal = modal;
+        self.open_select = None;
+        self.scroll.clear();
+        for input in [
+            &self.inputs.api_key,
+            &self.inputs.endpoint,
+            &self.inputs.openrouter,
+            &self.inputs.ob_groq,
+            &self.inputs.ob_azure,
+            &self.inputs.ob_endpoint,
+            &self.inputs.dict,
+            &self.inputs.ob_try,
+        ] {
+            input.update(cx, |input, cx| input.set_text("", cx));
+        }
+        self.fill_inputs(cx);
+        cx.notify();
+    }
+
+    pub fn scroll_to_bottom(&mut self, id: &'static str, cx: &mut Context<Self>) {
+        if let Some(handle) = self.scroll.get(id) {
+            let max = handle.max_offset().height;
+            handle.set_offset(point(px(0.), -max));
+            cx.notify();
+        }
     }
 
     pub fn setup(&self) -> Onboarding {
@@ -293,12 +380,31 @@ impl MainWindow {
         }
         let mode = self.state.mode();
         if mode != self.api_key_mode {
-            // A draft belongs to the engine it was typed for.
+            // A draft belongs to the engine it was typed for; keep it if the
+            // save failed, and bring back the new engine's own draft.
             self.commit_input("api_key", cx);
+            let (dirty, text) = {
+                let input = self.inputs.api_key.read(cx);
+                (input.dirty, input.text().to_owned())
+            };
+            if dirty {
+                self.api_drafts.insert(self.api_key_mode.clone(), text);
+            }
+            let draft = self.api_drafts.remove(&mode);
             self.api_key_mode = mode;
-            self.inputs.api_key.update(cx, |input, _| input.dirty = false);
+            self.inputs.api_key.update(cx, |input, cx| match draft {
+                Some(draft) => {
+                    input.set_text(draft, cx);
+                    input.dirty = true;
+                }
+                None => input.dirty = false,
+            });
         }
-        if self.copied.as_ref().is_some_and(|(_, at)| at.elapsed().as_millis() >= 1200) {
+        if self
+            .copied
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed().as_millis() >= 1200)
+        {
             self.copied = None;
         }
         self.fill_inputs(cx);
@@ -370,7 +476,14 @@ impl MainWindow {
         self.inputs
             .api_key
             .update(cx, |input, _| input.set_placeholder(placeholder));
-        for id in ["api_key", "endpoint", "openrouter", "ob_groq", "ob_azure", "ob_endpoint"] {
+        for id in [
+            "api_key",
+            "endpoint",
+            "openrouter",
+            "ob_groq",
+            "ob_azure",
+            "ob_endpoint",
+        ] {
             let value = self.field(id);
             if let Some(input) = self.input_by_id(id).cloned() {
                 input.update(cx, |input, cx| {
@@ -446,7 +559,14 @@ impl MainWindow {
     }
 
     pub fn commit_edits(&mut self, cx: &mut Context<Self>) {
-        for id in ["api_key", "endpoint", "openrouter", "ob_groq", "ob_azure", "ob_endpoint"] {
+        for id in [
+            "api_key",
+            "endpoint",
+            "openrouter",
+            "ob_groq",
+            "ob_azure",
+            "ob_endpoint",
+        ] {
             self.commit_input(id, cx);
         }
     }
@@ -454,12 +574,32 @@ impl MainWindow {
     /// Keeps the tab and unsaved drafts for the next time the window opens.
     fn remember(&mut self, cx: &mut Context<Self>) {
         self.commit_edits(cx);
-        let mut drafts = HashMap::new();
-        for id in ["dict", "ob_try", "api_key", "endpoint", "openrouter", "ob_groq", "ob_azure", "ob_endpoint"] {
+        let mut drafts: HashMap<String, String> = self
+            .api_drafts
+            .iter()
+            .map(|(mode, text)| (format!("api_key:{mode}"), text.clone()))
+            .collect();
+        for id in [
+            "dict",
+            "ob_try",
+            "api_key",
+            "endpoint",
+            "openrouter",
+            "ob_groq",
+            "ob_azure",
+            "ob_endpoint",
+        ] {
             if let Some(input) = self.input_by_id(id) {
                 let input = input.read(cx);
-                if input.dirty && !input.text().is_empty() {
-                    drafts.insert(id.to_owned(), input.text().to_owned());
+                // An empty settings draft is a rejected attempt to clear it.
+                let local = matches!(id, "dict" | "ob_try");
+                if input.dirty && !(local && input.text().is_empty()) {
+                    let key = if id == "api_key" {
+                        format!("api_key:{}", self.api_key_mode)
+                    } else {
+                        id.to_owned()
+                    };
+                    drafts.insert(key, input.text().to_owned());
                 }
             }
         }
@@ -480,7 +620,9 @@ impl MainWindow {
     pub fn add_term(&mut self, cx: &mut Context<Self>) {
         let value = self.inputs.dict.read(cx).text().to_owned();
         get().action("dict-add-btn", value);
-        self.inputs.dict.update(cx, |input, cx| input.set_text("", cx));
+        self.inputs
+            .dict
+            .update(cx, |input, cx| input.set_text("", cx));
         self.state = get().snapshot();
         cx.notify();
     }
@@ -504,7 +646,11 @@ impl MainWindow {
             }
             "apikey-toggle" => {
                 self.show_keys = !self.show_keys;
-                for input in [&self.inputs.api_key, &self.inputs.ob_groq, &self.inputs.ob_azure] {
+                for input in [
+                    &self.inputs.api_key,
+                    &self.inputs.ob_groq,
+                    &self.inputs.ob_azure,
+                ] {
                     let masked = !self.show_keys;
                     input.update(cx, |input, cx| {
                         input.masked = masked;
@@ -620,7 +766,7 @@ impl MainWindow {
         self.open_select = None;
         self.modal_return_focus = window.focused(cx);
         self.modal = true;
-        window.focus(&self.root_focus);
+        window.focus(&self.modal_focus[0]);
         cx.notify();
     }
 
@@ -646,11 +792,29 @@ impl MainWindow {
     }
 
     fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
-        window.focus_next();
+        if self.modal {
+            self.cycle_modal_focus(1, window);
+        } else {
+            window.focus_next();
+        }
     }
 
     fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, _: &mut Context<Self>) {
-        window.focus_prev();
+        if self.modal {
+            self.cycle_modal_focus(2, window);
+        } else {
+            window.focus_prev();
+        }
+    }
+
+    /// The close prompt is modal: Tab never reaches the controls behind it.
+    fn cycle_modal_focus(&self, step: usize, window: &mut Window) {
+        let current = self
+            .modal_focus
+            .iter()
+            .position(|handle| handle.is_focused(window))
+            .unwrap_or(2);
+        window.focus(&self.modal_focus[(current + step) % 3]);
     }
 
     /// While a hotkey button is recording, the next non-modifier key becomes
@@ -776,8 +940,6 @@ impl MainWindow {
                     .items_center()
                     .justify_center()
                     .rounded(px(RADIUS_SM))
-                    .border_1()
-                    .border_color(gpui::transparent_black())
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
                     .tooltip(ui::tooltip(tip, &t))
@@ -815,7 +977,12 @@ impl MainWindow {
                         .flex()
                         .gap(px(2.))
                         .pr(px(10.))
-                        .child(control("titlebar-minimize", "icons/minimize.svg", "Minimize", false))
+                        .child(control(
+                            "titlebar-minimize",
+                            "icons/minimize.svg",
+                            "Minimize",
+                            false,
+                        ))
                         .child(control("titlebar-close", "icons/close.svg", "Close", true)),
                 )
             })
@@ -850,8 +1017,6 @@ impl MainWindow {
                     .pb(px(8.))
                     .px(px(4.))
                     .rounded(px(RADIUS_MD))
-                    .border_1()
-                    .border_color(gpui::transparent_black())
                     .cursor_pointer()
                     .text_color(color)
                     .when(active, |b| {
@@ -870,8 +1035,8 @@ impl MainWindow {
                         b.child(
                             div()
                                 .absolute()
-                                .left(px(-9.))
-                                .top(px(17.))
+                                .left(px(-8.))
+                                .top(px(18.))
                                 .w(px(3.))
                                 .h(px(20.))
                                 .rounded_r(px(3.))
@@ -887,7 +1052,7 @@ impl MainWindow {
                         div()
                             .text_size(rem(0.65))
                             .font_weight(MEDIUM)
-                            .line_height(rem(0.65 * 1.5))
+                            .line_height(rem(0.65 * 1.35))
                             .child(label),
                     ),
                 &t,
@@ -1098,6 +1263,7 @@ impl MainWindow {
                             .child(
                                 ui::button("modal-tray", "Minimize to Tray", Kind::Secondary)
                                     .render(&t)
+                                    .track_focus(&self.modal_focus[0])
                                     .flex_1()
                                     .py(px(10.))
                                     .on_click(cx.listener(|view, _, window, cx| {
@@ -1107,6 +1273,7 @@ impl MainWindow {
                             .child(
                                 ui::button("modal-quit", "Quit", Kind::Primary)
                                     .render(&t)
+                                    .track_focus(&self.modal_focus[1])
                                     .flex_1()
                                     .px(px(14.))
                                     .on_click(cx.listener(|view, _, window, cx| {
@@ -1117,6 +1284,7 @@ impl MainWindow {
                     .child(
                         ui::button("modal-cancel", "Cancel", Kind::Link)
                             .render(&t)
+                            .track_focus(&self.modal_focus[2])
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.click("modal-cancel", window, cx)
                             })),
@@ -1162,7 +1330,7 @@ impl MainWindow {
                 .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
                 .text_size(rem(0.9))
                 .font_weight(NORMAL)
-                .line_height(rem(0.9 * 1.25))
+                .line_height(rem(0.9 * 1.35))
                 .text_color(t.ink)
                 .child(
                     div()
@@ -1302,7 +1470,7 @@ impl MainWindow {
             .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
             .when(focused.is_focused(window), move |f| f.border_color(t.faint))
             .text_size(rem(0.9))
-            .line_height(rem(0.9 * 1.25))
+            .line_height(rem(0.9 * 1.35))
             .text_color(t.ink)
             .child(input.clone())
             .when_some(reveal, |field, (id, shown)| {
@@ -1318,14 +1486,9 @@ impl MainWindow {
                             .items_center()
                             .justify_center()
                             .rounded(px(RADIUS_SM))
-                            .border_1()
-                            .border_color(gpui::transparent_black())
                             .cursor_pointer()
                             .hover(move |s| s.bg(t.focus_ring))
-                            .tooltip(ui::tooltip(
-                                if shown { "Hide key" } else { "Show key" },
-                                &t,
-                            ))
+                            .tooltip(ui::tooltip(if shown { "Hide key" } else { "Show key" }, &t))
                             .child(
                                 icon("icons/eye.svg", 16., if shown { t.ink } else { t.faint })
                                     .group_hover(id, move |s| s.text_color(t.ink)),
@@ -1338,19 +1501,36 @@ impl MainWindow {
     }
 
     /// A thin draggable scrollbar for a scroll container (`::-webkit-scrollbar`).
-    pub fn scrollbar(&self, id: &'static str, cx: &mut Context<Self>) -> Option<impl IntoElement> {
-        let handle = self.scroll.get(id)?.clone();
+    pub fn scrollbar(&self, id: &'static str, cx: &mut Context<Self>) -> Vec<gpui::AnyElement> {
+        let Some(handle) = self.scroll.get(id).cloned() else {
+            return vec![];
+        };
         let viewport = handle.bounds().size.height;
         let max = handle.max_offset().height;
+        // The thumb is sized from the last layout. If this frame's layout differs
+        // (first open, content changed), draw once more with the new size.
+        let watched = handle.clone();
+        let sentinel = gpui::canvas(
+            move |_, window, _| {
+                if watched.bounds().size.height != viewport || watched.max_offset().height != max {
+                    window.request_animation_frame();
+                }
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .size_0()
+        .into_any_element();
         if max <= px(0.5) || viewport <= px(0.) {
-            return None;
+            return vec![sentinel];
         }
         let t = self.theme;
         let offset = -handle.offset().y;
         let thumb = (viewport * (viewport / (viewport + max))).max(px(24.));
         let top = (viewport - thumb) * (offset / max).clamp(0., 1.);
         let dragging = self.drag.is_some_and(|(drag, _, _)| drag == id);
-        Some(
+        vec![
+            sentinel,
             div()
                 .id(SharedString::from(format!("{id}-scrollbar")))
                 .absolute()
@@ -1367,18 +1547,24 @@ impl MainWindow {
                         .w(px(4.))
                         .h(thumb)
                         .rounded(px(3.))
-                        .bg(if dragging { t.scrollbar_hover } else { t.scrollbar })
+                        .bg(if dragging {
+                            t.scrollbar_hover
+                        } else {
+                            t.scrollbar
+                        })
                         .hover(move |s| s.bg(t.scrollbar_hover))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |view, event: &gpui::MouseDownEvent, _, cx| {
                                 cx.stop_propagation();
-                                view.drag = Some((id, f32::from(event.position.y), f32::from(offset)));
+                                view.drag =
+                                    Some((id, f32::from(event.position.y), f32::from(offset)));
                                 cx.notify();
                             }),
                         ),
-                ),
-        )
+                )
+                .into_any_element(),
+        ]
     }
 
     fn drag_scroll(&mut self, event: &gpui::MouseMoveEvent, cx: &mut Context<Self>) {
@@ -1397,8 +1583,8 @@ impl MainWindow {
         let max = f32::from(handle.max_offset().height);
         let thumb = (viewport * (viewport / (viewport + max))).max(24.);
         let travel = (viewport - thumb).max(1.);
-        let offset = (start_offset + (f32::from(event.position.y) - start_y) * max / travel)
-            .clamp(0., max);
+        let offset =
+            (start_offset + (f32::from(event.position.y) - start_y) * max / travel).clamp(0., max);
         handle.set_offset(point(px(0.), px(-offset)));
         cx.notify();
     }
@@ -1447,7 +1633,7 @@ impl Render for MainWindow {
             .bg(t.sidebar)
             .font_family(FONT)
             .text_size(rem(1.))
-            .line_height(rem(1.5))
+            .line_height(gpui::relative(1.5))
             .text_color(t.ink)
             .child(self.titlebar(cx))
             .child(body)

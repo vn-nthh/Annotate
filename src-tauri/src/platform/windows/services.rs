@@ -19,6 +19,7 @@ use windows::{
 static THREAD: AtomicU32 = AtomicU32::new(0);
 static CLIPBOARD_OWNER: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static LAST_KEY_DOWN: AtomicU32 = AtomicU32::new(0);
 static SERVICE_THREAD: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
 const REGISTER: u32 = WM_APP + 61;
 const TRAY: u32 = WM_APP + 62;
@@ -125,6 +126,14 @@ struct RegisterRequest {
     combo: String,
     cancelled: Arc<AtomicBool>,
     reply: mpsc::SyncSender<Result<(), String>>,
+}
+
+/// The virtual key of the most recent physical key press (shortcut recording).
+pub fn last_key_down() -> Option<u16> {
+    match LAST_KEY_DOWN.load(Ordering::Relaxed) {
+        0 => None,
+        key => Some(key as u16),
+    }
 }
 
 pub fn register(slot: usize, combo: &str) -> Result<(), String> {
@@ -359,6 +368,9 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
     if code >= 0 {
         let keyboard = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         let injected = keyboard.flags.contains(LLKHF_INJECTED);
+        if matches!(wparam.0 as u32, WM_KEYDOWN | WM_SYSKEYDOWN) && !injected {
+            LAST_KEY_DOWN.store(keyboard.vkCode, Ordering::Relaxed);
+        }
         let mut slots = SHORTCUTS.lock().unwrap_or_else(|e| e.into_inner());
         for (slot, shortcut) in slots.iter_mut().enumerate() {
             let Some(shortcut) = shortcut else {

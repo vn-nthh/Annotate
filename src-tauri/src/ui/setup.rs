@@ -18,7 +18,7 @@ impl MainWindow {
             .mb(px(6.))
             .text_size(rem(1.2))
             .font_weight(SEMIBOLD)
-            .line_height(rem(1.2 * 1.3))
+            .line_height(rem(1.2 * 1.5))
             .text_color(self.theme.ink)
             .child(text)
     }
@@ -69,7 +69,13 @@ impl MainWindow {
             }))
     }
 
-    fn ob_link(&self, id: &'static str, label: &'static str, tip: &'static str, cx: &mut Context<Self>) -> Div {
+    fn ob_link(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        tip: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let t = self.theme;
         div().flex().child(
             ui::focusable(
@@ -86,6 +92,7 @@ impl MainWindow {
                     .border(px(1.5))
                     .border_color(t.rule)
                     .text_size(rem(0.8))
+                    .line_height(rem(0.8 * 1.35))
                     .font_weight(SEMIBOLD)
                     .text_color(t.ink)
                     .cursor_pointer()
@@ -143,11 +150,14 @@ impl MainWindow {
                 .pl(px(14.))
                 .pr(px(44.))
                 .rounded(px(RADIUS_LG))
+                .line_height(gpui::relative(1.35))
                 .bg(if selected { t.hover } else { t.warm })
                 .border(px(1.5))
                 .border_color(if selected { t.ink } else { t.rule })
                 .cursor_pointer()
-                .when(!selected, |c| c.hover(move |s| s.border_color(t.rule_hover).bg(t.hover)))
+                .when(!selected, |c| {
+                    c.hover(move |s| s.border_color(t.rule_hover).bg(t.hover))
+                })
                 .child(
                     div()
                         .flex()
@@ -214,9 +224,15 @@ impl MainWindow {
         } else if fraction.is_some() {
             (format!("Paused at {percent:.0}%"), "Resume")
         } else if failed {
-            ("Download failed. Check your connection.".to_owned(), "Retry")
+            (
+                "Download failed. Check your connection.".to_owned(),
+                "Retry",
+            )
         } else {
-            (format!("Not downloaded · {}", setup::megabytes(total)), "Download")
+            (
+                format!("Not downloaded · {}", setup::megabytes(total)),
+                "Download",
+            )
         };
         let status_color = if failed && !downloading {
             t.danger
@@ -274,19 +290,23 @@ impl MainWindow {
                     }),
             )
             .when_some(fraction, |card, fraction| {
-                card.child(div().mt(px(12.)).child(ui::progress_bar(fraction, t.paper, &t)))
-                    .child(
-                        div()
-                            .mt(px(6.))
-                            .text_size(rem(0.72))
-                            .font_weight(MEDIUM)
-                            .text_color(t.faint)
-                            .child(format!(
-                                "{} of {}",
-                                setup::megabytes((fraction as f64 * total as f64) as u64),
-                                setup::megabytes(total)
-                            )),
-                    )
+                card.child(
+                    div()
+                        .mt(px(12.))
+                        .child(ui::progress_bar(fraction, t.paper, &t)),
+                )
+                .child(
+                    div()
+                        .mt(px(6.))
+                        .text_size(rem(0.72))
+                        .font_weight(MEDIUM)
+                        .text_color(t.faint)
+                        .child(format!(
+                            "{} of {}",
+                            setup::megabytes((fraction as f64 * total as f64) as u64),
+                            setup::megabytes(total)
+                        )),
+                )
             })
     }
 
@@ -668,6 +688,7 @@ impl MainWindow {
         let step = guide.step;
         div()
             .flex_1()
+            .min_w_0()
             .min_h_0()
             .flex()
             .flex_col()
@@ -698,28 +719,27 @@ impl MainWindow {
                                 "Exit setup. Resume it any time from Settings.",
                                 &t,
                             ))
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.click("ob-exit", window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|view, _, window, cx| {
+                                    view.click("ob-exit", window, cx)
+                                }),
+                            ),
                     ),
             )
             .child(
-                div().flex().gap(px(4.)).mb(px(20.)).children(
-                    (0..setup::STEPS.len()).map(|index| {
+                div()
+                    .flex()
+                    .gap(px(4.))
+                    .mb(px(20.))
+                    .children((0..setup::STEPS.len()).map(|index| {
                         div()
                             .flex_1()
                             .h(px(3.))
                             .rounded(px(2.))
                             .bg(if index <= step { t.ink } else { t.rule })
-                    }),
-                ),
+                    })),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.step(guide, window, cx)),
-            )
+            .child(div().flex_1().min_h_0().child(self.step(guide, window, cx)))
             .child(ui::divider(&t).mb(px(12.)))
             .child(
                 div()
@@ -753,9 +773,11 @@ impl MainWindow {
                             .disabled(blocker.is_some())
                             .render(&t)
                             .py(px(9.))
-                            .on_click(cx.listener(|view, _, window, cx| {
-                                view.click("ob-next", window, cx)
-                            })),
+                            .on_click(
+                                cx.listener(|view, _, window, cx| {
+                                    view.click("ob-next", window, cx)
+                                }),
+                            ),
                     ),
             )
     }

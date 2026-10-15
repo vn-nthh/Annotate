@@ -440,6 +440,28 @@ fn register_dict_hotkey(_app: AppHandle, shortcut_str: String) -> Result<(), Str
 }
 pub fn run() {
     let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|s| s == "--capture-ui") {
+        let Some(directory) = args.get(2) else {
+            eprintln!("--capture-ui requires an output directory");
+            std::process::exit(1);
+        };
+        let directory = std::path::PathBuf::from(directory);
+        std::env::set_var("ANNOTATE_UI_TEST", "1");
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::set_var(
+            "ANNOTATE_DATA_DIR",
+            directory.join(format!("test-data-{}-{stamp}", std::process::id())),
+        );
+        let result = app::initialize_runtime().and_then(|_| ui::capture(directory));
+        if let Err(error) = result {
+            eprintln!("Native UI capture: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.get(1).is_some_and(|s| s == "--benchmark") {
         let Some(directory) = args.get(2) else {
             eprintln!("--benchmark requires a report directory");

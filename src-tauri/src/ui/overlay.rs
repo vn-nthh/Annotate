@@ -3,9 +3,8 @@
 //! after a dictionary capture. It never takes focus or receives clicks.
 use super::theme::{FONT, MEDIUM};
 use gpui::{
-    div, point, prelude::*, px, rgb, rgba, size, svg, App, Bounds, Context, Global,
-    SharedString, Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind,
-    WindowOptions,
+    div, point, prelude::*, px, rgb, rgba, size, svg, App, Bounds, Context, Global, SharedString,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowKind, WindowOptions,
 };
 use std::{
     sync::atomic::{AtomicU32, AtomicU64, Ordering},
@@ -89,7 +88,7 @@ pub fn install(cx: &mut App) {
         ..Default::default()
     };
     let opened = cx.open_window(options, |window, cx| {
-        crate::platform::prepare_overlay(window);
+        crate::platform::prepare_overlay(window, CANVAS_WIDTH, HEIGHT, BOTTOM_MARGIN);
         cx.new(|_| Overlay {
             mode: Mode::Hidden,
             smoothed: 0.0,

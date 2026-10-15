@@ -73,7 +73,11 @@ impl MainWindow {
                     .flex_1()
                     .min_w_0()
                     .text_size(rem(0.75))
-                    .font_weight(if ready { MEDIUM } else { gpui::FontWeight::NORMAL })
+                    .font_weight(if ready {
+                        MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
                     .text_color(if ready { t.ink } else { t.faint })
                     .whitespace_nowrap()
                     .overflow_hidden()
@@ -84,9 +88,9 @@ impl MainWindow {
                 row.child(
                     ui::button(action, "Download", Kind::Action)
                         .render(&t)
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            view.click(action, window, cx)
-                        })),
+                        .on_click(
+                            cx.listener(move |view, _, window, cx| view.click(action, window, cx)),
+                        ),
                 )
             })
     }
@@ -186,14 +190,17 @@ impl MainWindow {
             .child(header("Subtitling", None, &t))
             .child(description)
             .child(zone)
-            .child(group().pt(px(0.)).mb(px(2.)).child(ui::label("Language", &t)).child(
-                self.select(
-                    "sub-lang-select",
-                    languages(),
-                    &s.setting("subtitleLanguage", "auto"),
-                    cx,
-                ),
-            ))
+            .child(
+                group()
+                    .mb(px(16.))
+                    .child(ui::label("Language", &t))
+                    .child(self.select(
+                        "sub-lang-select",
+                        languages(),
+                        &s.setting("subtitleLanguage", "auto"),
+                        cx,
+                    )),
+            )
             .when(!(s.file.is_none() && deps_ready), |column| {
                 column.child(
                     div()
@@ -258,16 +265,13 @@ impl MainWindow {
         let locked = s.busy.contains("sub-generate-btn") || busy;
         let copied = self.copied("sub-summary-copy-btn");
         let scroll = self.scroll_handle("preview");
-        panel()
+        let page = self.scroll_handle("subtitling");
+        // The page scrolls when a long summary pushes the actions down; the
+        // preview fills the remaining height and scrolls on its own.
+        let column = panel()
+            .h_auto()
+            .min_h_full()
             .child(header("Subtitling", None, &t))
-            .child(
-                div()
-                    .mb(px(16.))
-                    .text_size(rem(0.82))
-                    .line_height(rem(0.82 * 1.5))
-                    .text_color(t.light)
-                    .child("Generate SRT subtitles from any audio or video file using VAD + Whisper."),
-            )
             .children(self.sub_progress())
             .child(
                 div()
@@ -326,21 +330,24 @@ impl MainWindow {
                                             .border_color(t.rule)
                                             .when(!t.dark, |b| b.bg(t.paper))
                                             .text_size(rem(0.68))
+                                            .line_height(rem(0.68 * 1.35))
                                             .font_weight(SEMIBOLD)
                                             .text_color(t.light)
                                             .cursor_pointer()
                                             .hover(move |s| {
-                                                s.text_color(t.ink).border_color(t.faint).bg(
-                                                    if t.dark { t.tab_wash } else { t.hover },
-                                                )
+                                                s.text_color(t.ink)
+                                                    .border_color(t.faint)
+                                                    .bg(if t.dark { t.tab_wash } else { t.hover })
                                             })
                                             .tooltip(ui::tooltip("Copy summary", &t))
                                             .child(if copied { "Copied!" } else { "Copy" }),
                                         &t,
                                     )
-                                    .on_click(cx.listener(|view, _, window, cx| {
-                                        view.click("sub-summary-copy-btn", window, cx)
-                                    })),
+                                    .on_click(cx.listener(
+                                        |view, _, window, cx| {
+                                            view.click("sub-summary-copy-btn", window, cx)
+                                        },
+                                    )),
                                 ),
                         )
                         .child(
@@ -378,7 +385,11 @@ impl MainWindow {
                             .children(
                                 preview
                                     .lines()
-                                    .map(|line| div().min_h(rem(0.72 * 1.55)).child(SharedString::from(line.to_owned())))
+                                    .map(|line| {
+                                        div()
+                                            .min_h(rem(0.72 * 1.55))
+                                            .child(SharedString::from(line.to_owned()))
+                                    })
                                     .collect::<Vec<_>>(),
                             ),
                     )
@@ -402,14 +413,11 @@ impl MainWindow {
                         let button = ui::button(
                             "sub-summarize-btn",
                             if busy { "Summarizing..." } else { "Summarize" },
-                            Kind::Primary,
+                            Kind::Summarize,
                         )
                         .disabled(disabled)
                         .render(&t)
-                        .flex_1()
-                        .px(px(16.))
-                        .bg(t.summarize)
-                        .when(!disabled, |b| b.hover(move |s| s.bg(t.summarize_hover)));
+                        .flex_1();
                         let button = if key_missing {
                             button.tooltip(ui::tooltip(
                                 "Set an OpenRouter API key in Settings to enable summaries.",
@@ -425,21 +433,28 @@ impl MainWindow {
                         }))
                     })
                     .child(
-                        ui::button("sub-new-btn", "New File", Kind::Secondary)
+                        ui::button("sub-new-btn", "New File", Kind::Plain)
                             .disabled(locked)
                             .render(&t)
                             .flex_1()
-                            .px(px(18.))
-                            .py(px(10.))
-                            .border_1()
-                            .font_weight(MEDIUM)
-                            .when(t.dark, |b| b.bg(gpui::transparent_black()))
                             .on_click(cx.listener(move |view, _, window, cx| {
                                 if !locked {
                                     view.click("sub-new-btn", window, cx)
                                 }
                             })),
                     ),
+            );
+        div()
+            .relative()
+            .size_full()
+            .child(
+                div()
+                    .id("subtitling-result")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&page)
+                    .child(column),
             )
+            .children(self.scrollbar("subtitling", cx))
     }
 }
