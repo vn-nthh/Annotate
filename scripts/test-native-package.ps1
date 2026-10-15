@@ -52,7 +52,7 @@ $startInfo.RedirectStandardError = $true
 $process = [Diagnostics.Process]::Start($startInfo)
 try {
   $appErrors = $process.StandardError.ReadToEndAsync()
-  if (-not $process.WaitForExit(60000)) { $process.Kill(); throw "Packaged UI capture timed out; files remain at $testDir" }
+  if (-not $process.WaitForExit(90000)) { $process.Kill(); throw "Packaged UI capture timed out; files remain at $testDir" }
   if ($process.ExitCode -ne 0) { throw "Packaged UI capture failed: $($appErrors.GetAwaiter().GetResult())" }
 } finally { $process.Dispose() }
 $sceneCount = @(Get-ChildItem -LiteralPath $captureDir -Filter '*.png').Count
@@ -64,7 +64,7 @@ if (-not (Test-Path -LiteralPath $checksPath) -or $sceneCount -lt 80 -or
 }
 $checksJson = Get-Content -LiteralPath $checksPath -Raw -Encoding UTF8
 $checks = ConvertFrom-Json -InputObject $checksJson
-if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -lt 30 -or
+if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -lt 33 -or
     @($checks | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
   throw "Packaged UI harness produced no valid passed-check array; files remain at $testDir"
 }

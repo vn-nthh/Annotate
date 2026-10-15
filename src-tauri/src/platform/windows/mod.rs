@@ -167,8 +167,15 @@ pub fn pressed_shortcut() -> Option<String> {
     let down = |vk: VIRTUAL_KEY| unsafe { GetKeyState(vk.0 as i32) < 0 };
     // The keyboard hook sees each key before the window does, so this is the
     // key behind the key-down being handled, not just any key held down.
-    let key = services::last_key_down()?;
-    if matches!(key, 0x10..=0x12 | 0x5b | 0x5c | 0xa0..=0xa5) || !down(VIRTUAL_KEY(key)) {
+    let fixture = CAPTURE_KEY_DOWN.load(std::sync::atomic::Ordering::Relaxed) as u16;
+    let key = if fixture == 0 {
+        services::last_key_down()?
+    } else {
+        fixture
+    };
+    if matches!(key, 0x10..=0x12 | 0x5b | 0x5c | 0xa0..=0xa5)
+        || (fixture == 0 && !down(VIRTUAL_KEY(key)))
+    {
         return None;
     }
     let mut keys = vec![];
@@ -186,6 +193,28 @@ pub fn pressed_shortcut() -> Option<String> {
     }
     keys.push(key_name(key));
     Some(keys.join("+"))
+}
+
+static CAPTURE_KEY_DOWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Supplies a virtual key to the isolated UI harness, without touching the keyboard.
+pub fn set_capture_shortcut_key(key: u16) {
+    assert!(std::env::var_os("ANNOTATE_UI_TEST").is_some());
+    CAPTURE_KEY_DOWN.store(key as u32, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Posts Caps Lock to the capture window without changing the system lock state.
+pub fn post_capture_capslock(window: &impl HasWindowHandle) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{PostMessageW, WM_KEYDOWN},
+    };
+    assert!(std::env::var_os("ANNOTATE_UI_TEST").is_some());
+    if let Some(hwnd) = hwnd(window) {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_KEYDOWN, WPARAM(0x14), LPARAM(1));
+        }
+    }
 }
 
 /// Rounded corners (Windows 11) for the borderless main window.

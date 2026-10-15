@@ -245,6 +245,41 @@ pub async fn run(
     settle(cx).await;
     passed.push("The close prompt consumes wheel input meant for the page behind it");
 
+    reset(handle, cx, "settings").await?;
+    let mut furthest = 0_f32;
+    for direction in ["tab", "shift-tab"] {
+        for _ in 0..24 {
+            key(handle, cx, direction)?;
+            cx.background_executor()
+                .timer(Duration::from_millis(60))
+                .await;
+            ensure(
+                view(handle, cx, |view, _, cx| {
+                    let Some((mut bounds, clip)) = cx
+                        .try_global::<super::components::FocusBounds>()
+                        .and_then(|b| b.0)
+                    else {
+                        return true;
+                    };
+                    let scroll = &view.scroll["settings"];
+                    let viewport = scroll.bounds();
+                    if clip.left() < viewport.left() || clip.top() < viewport.top() {
+                        return true;
+                    }
+                    bounds.origin += scroll.offset();
+                    bounds.top() >= viewport.top() && bounds.bottom() <= viewport.bottom()
+                })?,
+                "Keyboard focus left part of a Settings control clipped",
+            )?;
+            furthest = furthest.min(scroll_y(handle, cx, "settings")?);
+        }
+    }
+    ensure(
+        furthest < -100.,
+        "Tab reached clipped Settings controls without revealing them",
+    )?;
+    passed.push("Tab and Shift+Tab reveal Settings controls outside the viewport");
+
     get().change(|s| s.recording_hotkey = Some("hotkey-btn".into()));
     settle(cx).await;
     key(handle, cx, "escape")?;
@@ -254,6 +289,25 @@ pub async fn run(
         "Escape did not cancel shortcut recording",
     )?;
     passed.push("Escape cancels shortcut recording");
+
+    get().change(|s| s.recording_hotkey = Some("hotkey-btn".into()));
+    settle(cx).await;
+    crate::platform::set_capture_shortcut_key(0x14);
+    let capslock_event = view(handle, cx, |_, window, _| {
+        crate::platform::post_capture_capslock(window)
+    });
+    settle(cx).await;
+    crate::platform::set_capture_shortcut_key(0);
+    capslock_event?;
+    ensure(
+        view(handle, cx, |view, _, _| {
+            view.recorded_key.as_deref() == Some("capslock")
+        })?,
+        "Caps Lock's modifier-change event did not reach the shortcut recorder",
+    )?;
+    key(handle, cx, "escape")?;
+    settle(cx).await;
+    passed.push("Caps Lock modifier changes reach the shortcut recorder using a virtual-key fixture, without registering a global shortcut");
 
     for activation in ["enter", "space"] {
         view(handle, cx, |view, _, cx| {
@@ -631,6 +685,8 @@ pub async fn run(
     passed.push("Long summaries scroll the result page so its actions stay reachable");
 
     reset(handle, cx, "dictionary").await?;
+    get().change(|s| s.recording_hotkey = Some("hotkey-btn".into()));
+    settle(cx).await;
     view(handle, cx, |view, window, cx| {
         view.click("modal-tray", window, cx)
     })?;
@@ -638,6 +694,10 @@ pub async fn run(
     ensure(
         handle.update(cx, |_, _, _| ()).is_err(),
         "Closing to the tray did not release the window",
+    )?;
+    ensure(
+        !get().recording_hotkey_active(),
+        "Closing to the tray left shortcut recording active",
     )?;
     let reopened = cx
         .update(|cx| super::window::open_at(cx, point(px(100.), px(100.))))
@@ -648,7 +708,18 @@ pub async fn run(
         view(reopened, cx, |view, _, _| view.tab == "dictionary")?,
         "Reopening from the tray lost the tab",
     )?;
-    passed.push("Closing to the tray releases the window and reopening keeps the tab");
+    passed.push("Closing to the tray releases the window, cancels shortcut recording, and reopening keeps the tab");
+
+    get().change(|s| s.recording_hotkey = Some("dict-hotkey-btn".into()));
+    settle(cx).await;
+    cx.update(super::window::close).map_err(|e| e.to_string())?;
+    settle(cx).await;
+    ensure(
+        !get().recording_hotkey_active() && reopened.update(cx, |_, _, _| ()).is_err(),
+        "Programmatic tray close left a window or shortcut recording active",
+    )?;
+    passed
+        .push("The shared tray-close path cancels shortcut recording before releasing the window");
 
     Ok(passed)
 }

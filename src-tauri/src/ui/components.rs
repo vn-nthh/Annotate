@@ -1,10 +1,41 @@
 //! Building blocks shared by the panels. Sizes follow `src/index.css`.
 use super::theme::{rem, Theme, MEDIUM, NORMAL, SEMIBOLD};
 use gpui::{
-    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyView, App, Div, ElementId,
-    Hsla, SharedString, Stateful, Transformation, Window,
+    div, percentage, prelude::*, px, svg, Animation, AnimationExt, AnyView, App, Bounds, Div,
+    ElementId, Global, Hsla, Pixels, SharedString, Stateful, Transformation, Window,
 };
-use std::time::Duration;
+use std::{cell::Cell, rc::Rc, time::Duration};
+
+gpui::actions!(controls, [RevealFocus]);
+
+#[derive(Default)]
+pub(super) struct FocusBounds(pub Option<(Bounds<Pixels>, Bounds<Pixels>)>);
+impl Global for FocusBounds {}
+
+/// The focused control answers this action with its unscrolled bounds. The
+/// containing panel can then reveal it without allocating handles per control.
+pub fn reveal_focus<E: InteractiveElement + ParentElement>(element: E) -> E {
+    let bounds = Rc::new(Cell::new(None));
+    let measured = bounds.clone();
+    element
+        .on_action(move |_: &RevealFocus, _, cx| {
+            cx.set_global(FocusBounds(bounds.get()));
+            cx.propagate();
+        })
+        .child(
+            gpui::canvas(
+                move |mut bounds, window, _| {
+                    bounds.origin -= window.element_offset();
+                    measured.set(Some((bounds, window.content_mask().bounds)));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full(),
+        )
+}
 
 pub const RADIUS_SM: f32 = 6.0;
 pub const RADIUS_MD: f32 = 10.0;
@@ -14,9 +45,11 @@ pub const RADIUS_LG: f32 = 14.0;
 /// controls also darken their border, as `:focus` does in the reference.
 pub fn focusable(element: Stateful<Div>, theme: &Theme) -> Stateful<Div> {
     let (ring, border) = (theme.focus_ring, theme.faint);
-    element
-        .tab_index(0)
-        .focus(move |s| s.border_color(border).shadow(focus_ring(ring)))
+    reveal_focus(
+        element
+            .tab_index(0)
+            .focus(move |s| s.border_color(border).shadow(focus_ring(ring))),
+    )
 }
 
 pub fn focus_ring(color: Hsla) -> Vec<gpui::BoxShadow> {

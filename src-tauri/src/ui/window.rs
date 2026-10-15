@@ -62,7 +62,7 @@ pub struct MainWindow {
     api_key_mode: String,
     /// Unsaved API key edits for the engines not currently shown.
     api_drafts: HashMap<String, String>,
-    recorded_key: Option<String>,
+    pub(super) recorded_key: Option<String>,
     pub scroll: HashMap<&'static str, ScrollHandle>,
     pub drag: Option<(&'static str, f32, f32)>,
     /// The decoded profile photo, kept while the same bytes are in state.
@@ -589,6 +589,7 @@ impl MainWindow {
 
     /// Keeps the tab and unsaved drafts for the next time the window opens.
     fn remember(&mut self, cx: &mut Context<Self>) {
+        get().change(|s| s.recording_hotkey = None);
         self.commit_edits(cx);
         let mut drafts: HashMap<String, String> = self
             .api_drafts
@@ -807,20 +808,55 @@ impl MainWindow {
         }
     }
 
-    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, _: &mut Context<Self>) {
+    fn focus_next(&mut self, _: &FocusNext, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal {
             self.cycle_modal_focus(1, window);
         } else {
             window.focus_next();
+            cx.set_global(ui::FocusBounds::default());
+            window.dispatch_action(Box::new(ui::RevealFocus), cx);
         }
     }
 
-    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, _: &mut Context<Self>) {
+    fn focus_previous(&mut self, _: &FocusPrevious, window: &mut Window, cx: &mut Context<Self>) {
         if self.modal {
             self.cycle_modal_focus(2, window);
         } else {
             window.focus_prev();
+            cx.set_global(ui::FocusBounds::default());
+            window.dispatch_action(Box::new(ui::RevealFocus), cx);
         }
+    }
+
+    fn reveal_focus(&mut self, _: &ui::RevealFocus, _: &mut Window, cx: &mut Context<Self>) {
+        let Some((mut bounds, clip)) = cx.try_global::<ui::FocusBounds>().and_then(|b| b.0) else {
+            return;
+        };
+        let Some(scroll) = self.scroll.get(self.tab.as_str()) else {
+            return;
+        };
+        let viewport = scroll.bounds();
+        // Titlebar and sidebar controls are outside the panel's clipping area.
+        if clip.top() < viewport.top()
+            || clip.left() < viewport.left()
+            || clip.bottom() > viewport.bottom()
+            || clip.right() > viewport.right()
+        {
+            return;
+        }
+        let mut offset = scroll.offset();
+        bounds.origin += offset;
+        let margin = px(4.);
+        let delta = if bounds.top() < viewport.top() + margin {
+            viewport.top() + margin - bounds.top()
+        } else if bounds.bottom() > viewport.bottom() - margin {
+            viewport.bottom() - margin - bounds.bottom()
+        } else {
+            return;
+        };
+        offset.y = (offset.y + delta).clamp(-scroll.max_offset().height, px(0.));
+        scroll.set_offset(offset);
+        cx.notify();
     }
 
     /// The close prompt is modal: Tab never reaches the controls behind it.
@@ -857,6 +893,28 @@ impl MainWindow {
             self.recorded_key = None;
             // GPUI activates focused buttons on Enter/Space release.
             cx.stop_propagation();
+        }
+    }
+
+    fn record_modifiers(
+        &mut self,
+        _: &gpui::ModifiersChangedEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.state.recording_hotkey.as_deref() else {
+            return;
+        };
+        // GPUI reports Caps Lock as a modifier change rather than a key-down.
+        let Some(combo) =
+            crate::platform::pressed_shortcut().filter(|key| key.ends_with("CapsLock"))
+        else {
+            return;
+        };
+        self.recorded_key = Some("capslock".into());
+        cx.stop_propagation();
+        if let Err(error) = get().register_shortcut(id, &combo) {
+            get().status(&error, true);
         }
     }
 
@@ -1480,7 +1538,7 @@ impl MainWindow {
         let focused = input.read(cx).focus_handle(cx);
         let input_id = self.input_id(input);
         let pointer_input = input.clone();
-        div()
+        let field = div()
             .id(SharedString::from(format!("field-{input_id}")))
             .relative()
             .w_full()
@@ -1531,7 +1589,8 @@ impl MainWindow {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |view, _, window, cx| view.click(id, window, cx))),
                 )
-            })
+            });
+        ui::reveal_focus(field)
     }
 
     /// A thin draggable scrollbar for a scroll container (`::-webkit-scrollbar`).
@@ -1654,8 +1713,10 @@ impl Render for MainWindow {
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
+            .on_action(cx.listener(Self::reveal_focus))
             .capture_key_down(cx.listener(Self::record_key))
             .capture_key_up(cx.listener(Self::recorded_key_up))
+            .on_modifiers_changed(cx.listener(Self::record_modifiers))
             .on_mouse_move(cx.listener(|view, event, _, cx| view.drag_scroll(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
