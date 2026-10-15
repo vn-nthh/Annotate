@@ -21,8 +21,10 @@ permissions, model backend, and packaging.
   representative light/dark scenes at 150%. The latter use a simulated
   `WM_DPICHANGED` on the capture window, checking 520 x 580 logical and
   780 x 870 physical pixels before restoring the original scale. This does
-  not test dragging between real monitors or changing desktop settings.
-- All 28 harness checks pass. They cover engine migration, titlebar and native
+  not test dragging between real monitors or changing desktop settings. Eight
+  additional large-transcript captures cover the preview's top and bottom in
+  both themes at both scales, under `stress/`.
+- All 30 harness checks pass. They cover engine migration, titlebar and native
   Windows close requests (the Alt+F4/taskbar Close path), titlebar mouse-down
   preserving the native drag action,
   modal focus trapping and keyboard activation, dropdown keys, wheel input,
@@ -34,7 +36,9 @@ permissions, model backend, and packaging.
   styles, matching window/client bounds, `HTTRANSPARENT`, `MA_NOACTIVATE`, and an unchanged foreground HWND. Text checks
   include padding caret placement, drags beyond the field, and UTF-16
   preedit/update/commit/replacement of combining marks, CJK, and surrogate pairs
-  through the live GPUI input handler.
+  through the live GPUI input handler. A click after text replacement but before
+  repaint reproduced a byte-index panic before the fix; the regression check
+  now verifies valid caret positions for both shorter ASCII and multibyte text.
   Shortcut completion and recording status use fixtures; no real shortcut is
   registered and no microphone or clipboard is used.
 - The capture exits nonzero on a failed render or check, rejects blank black
@@ -48,8 +52,14 @@ permissions, model backend, and packaging.
   Back button, and hint while the app reflects the current setup step.
 - Settings and Subtitles borrow the view's state during painting instead of
   copying history, dictionary, and subtitle results on every hover or scroll.
-  The final audit's 88 release captures match the previously reviewed release
-  captures pixel for pixel.
+  The subtitle preview prepares its text only when entries change, retains one
+  wrapped layout, caches bounded measurement sizes, and paints visible lines.
+  The 3,000-entry stress check scrolls through 14,999 source lines without
+  rebuilding the layout on repaint, wheel input, or jumping to the last entry.
+  It records visible ranges and layout counts in `stress/metrics.json`.
+  Only 18-19 source lines were submitted for painting in the measured viewports;
+  these work counts are retained in `gpui-benchmark.json`, not frame timings.
+  All 88 original release scenes remain pixel-identical to the previous build.
 - The recording overlay explicitly uses `WS_POPUP` without caption/resize
   styles and overrides `WM_NCCALCSIZE`, since GPUI otherwise reserves a native
   frame around its transparent canvas. Placement recalculates that frame from
@@ -75,14 +85,14 @@ python scripts/capture-native-reference.py --scale 1.5 --output <reference-direc
 
 [`gpui-benchmark.json`](gpui-benchmark.json) records three measured runs after
 warmup on a Ryzen 5 5600G. Median process creation to first view render was
-536 ms (509 ms from the app's own timing origin). The GPUI timing hook runs
+523 ms (502 ms from the app's own timing origin). The GPUI timing hook runs
 at entry into the first render, before GPU presentation; it is not a measure
 of a completed frame on the display. The benchmark metadata states this.
-This benchmark predates the titlebar focus fix; its measured executable hash
-is retained in the JSON.
+This benchmark includes the titlebar and review fixes; its measured executable
+hash is retained in the JSON.
 
-Median open-window working set was 61.71 MiB, with 123.21 MiB private bytes.
-In the tray it was 61.19 MiB / 76.47 MiB, with one process in both phases.
+Median open-window working set was 59.33 MiB, with 123.18 MiB private bytes.
+In the tray it was 59.26 MiB / 76.63 MiB, with one process in both phases.
 Closing to the tray removes the settings window and its views; GPUI's shared
 GPU device remains resident. Models are not loaded during the benchmark.
 `ANNOTATE_UI_TEST` also skips device discovery, credentials, legacy migration,
@@ -110,20 +120,21 @@ worker exited with code 0.
 
 `scripts/package-native.ps1 -SkipBuild` built the portable ZIP and NSIS setup.
 `scripts/test-native-package.ps1` then extracted the ZIP outside the checkout,
-rendered all 88 images, passed all 28 checks, verified the isolated Vulkan
+rendered all 96 images, passed all 30 checks, verified the isolated Vulkan
 worker, and rejected browser assets, raw fonts, CUDA, and missing runtime files.
-ZIP creation was retried after a transient worker-file sharing violation;
-the final archive passed the extraction and worker checks.
+An earlier package attempt logged a ZIP error while the build continued.
+The archive command now requests terminating errors explicitly with
+`Compress-Archive -ErrorAction Stop`; a locked-file check confirms it throws.
 The installer was built but installation and uninstallation were not run.
 
 Release executable SHA-256:
-`DFFA613590B3EFE658256FB3770EF05D1F97CD7E4B5EAD23AE70DA45AED85045`.
+`6F14369E706BD911AF320A76855742B6B74D023F96508E67E98BE1E7A3EFDC16`.
 Vulkan worker SHA-256:
 `939238541825C28A9DC23025C4D270D312CE29A104D55C3E99428BB10B13625F`.
 Portable ZIP SHA-256:
-`F7E7B54C2CCCA49B8D983E8BF151223FA472DA8D8B1C00B922246A9C09E3471F`.
+`B18A3D222327218DB2BB8EB3D8F958BA134BD46ED069BF50713DB5CECEAB878C`.
 Setup executable SHA-256:
-`C0419F4F0DFBF23B951CF2660F8AC244BD360857D101FE11FE177E6BBF0D94A1`.
+`642B4B8D59F6450805B56165E3D3741401BAEAEC4C6D0F9B9E7DDE5D90C283AF`.
 
 Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
 input and paste into another app, a real IME session, and macOS were not
