@@ -3,7 +3,7 @@ members = ["crates/whisper-worker"]
 
 [package]
 name = "annotate"
-version = "0.2.1"
+version = "0.3.0"
 description = "Push-to-talk voice transcription"
 authors = ["you"]
 license = ""
@@ -12,37 +12,31 @@ edition = "2021"
 
 [lib]
 name = "app_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2.5.6", features = [] }
+embed-resource = "3.0.8"
 
 [dependencies]
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["raw_value"] }
+png = "0.17"
+rusty-leveldb = "4.0.1"
 url = "2.5"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "2.10.3", features = ["tray-icon", "image-png"] }
-tauri-plugin-log = "2"
-tauri-plugin-global-shortcut = "2.3.1"
-tauri-plugin-store = "2.4.2"
-reqwest = { version = "0.13.2", features = ["multipart", "json", "stream"] }
-enigo = { version = "0.3.0", features = ["serde"] }
+reqwest = { version = "0.13.2", features = ["multipart", "json", "stream", "query"] }
 base64 = "0.22.1"
-sysinfo = "0.36.1"
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_WinRT", "Win32_System_Diagnostics_ToolHelp", "Win32_Media_Audio", "Win32_Devices_FunctionDiscovery", "Win32_UI_Shell_PropertiesSystem"] }
+windows = { version = "0.61.3", features = ["Foundation_Numerics", "System", "UI_Composition", "UI_Composition_Desktop", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Graphics_Direct2D", "Win32_Graphics_Direct2D_Common", "Win32_Graphics_DirectWrite", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Imaging", "Win32_Globalization", "Win32_Security", "Win32_System_Time", "Win32_System_SystemInformation", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_WinRT", "Win32_System_WinRT_Composition", "Win32_System_Diagnostics_ToolHelp", "Win32_Media_Audio", "Win32_Media_Multimedia", "Win32_Devices_FunctionDiscovery", "Win32_UI_Controls", "Win32_UI_Controls_Dialogs", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
+windows-numerics = "0.2.0"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_UI_Input_KeyboardAndMouse"] }
 futures-util = "0.3"
-tokio = { version = "1", features = ["rt", "process", "io-util", "sync", "time"] }
-tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "process", "io-util", "sync", "time", "macros"] }
 zip = "2"
 open = "5"
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "tls-native"] }
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["ndarray", "std", "download-binaries", "copy-dylibs", "tls-native"] }
 tokenizers = { version = "0.20", default-features = false, features = ["onig"] }
 ndarray = "0.17"
 keyring = { version = "3", features = ["windows-native"] }
 hound = "3.5"
 rand = "0.8"
 sha2 = "0.10"
-tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
