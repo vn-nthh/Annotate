@@ -217,6 +217,25 @@ body::before {
   -webkit-app-region: no-drag;
 }
 
+/* Unfocused AppKit traffic lights; the app uses macOS's native buttons. */
+html[data-platform="macos"] .titlebar {
+  position: relative;
+  height: 48px;
+  padding-left: 84px;
+}
+html[data-platform="macos"] .titlebar-controls { display: none; }
+html[data-platform="macos"] .titlebar::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 17px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--ink-faint);
+  box-shadow: 20px 0 var(--ink-faint), 40px 0 var(--ink-faint);
+}
+
 .titlebar-btn {
   display: flex;
   align-items: center;

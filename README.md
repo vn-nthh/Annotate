@@ -6,13 +6,15 @@
   </picture>
 </p>
 
-Push-to-talk voice transcription for Windows. Hold a hotkey, speak, and release;
+Push-to-talk voice transcription for Windows, with an Apple silicon macOS preview.
+Hold a hotkey, speak, and release;
 Annotate pastes the transcription into the active application.
 
 ## Features
 
 - Groq Whisper, Azure MAI-Transcribe, and offline local Whisper transcription.
 - Vulkan GPU acceleration for local Whisper on supported AMD, Intel, and NVIDIA GPUs.
+- Metal acceleration for local Whisper in the Apple silicon preview.
 - Custom dictionary, transcription history, and Google Drive sync.
 - Optional on-device grammar cleanup using a GECtor ONNX model.
 - Subtitle generation from audio/video with VAD, and OpenRouter subtitle summaries.
@@ -23,9 +25,10 @@ Annotate pastes the transcription into the active application.
 - API keys and Google refresh tokens stored in Windows Credential Manager.
 
 The interface is built with [GPUI](https://gpui.rs), Zed's GPU-accelerated UI
-framework, which renders through Direct3D 11 on Windows. Global shortcuts, the
-tray, synthetic input, and audio capture use Win32 and WASAPI behind a small
-platform layer, so the same UI can later run on macOS. The settings window is
+framework, which renders through Direct3D 11 on Windows and Metal on macOS.
+Global shortcuts, the tray/menu bar, synthetic input, and audio capture use
+platform services: Win32/WASAPI on Windows and AppKit/Carbon/CoreAudio on macOS.
+The settings window is
 released when closed to the tray. Whisper and grammar models load when
 requested. Browser transcription and CUDA are no longer available; older saved
 selections migrate to Groq and Vulkan.
@@ -45,6 +48,28 @@ Requirements are Windows 10/11 x64, a Direct3D 11 capable graphics driver, and t
 [Microsoft Visual C++ 2015–2022 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
 Local Whisper additionally requires a GPU driver with Vulkan support. The Vulkan
 SDK is a build dependency only. The app does not require WebView2 or Node.js.
+
+### Apple silicon preview
+
+The [macOS preview](https://github.com/vn-nthh/Annotate/releases/tag/v0.5.0-macos-preview.1)
+targets Apple silicon (arm64) and macOS 13 or later. Open the DMG and drag
+Annotate into Applications, or extract the ZIP. Intel Macs are not included.
+
+The app is ad-hoc signed and is not notarized. If Gatekeeper blocks this preview,
+use System Settings > Privacy & Security > Open Anyway after attempting to
+open it. Allow Microphone access when requested. Pasting and dictionary capture
+also need Annotate enabled under Privacy & Security > Accessibility.
+
+Choose a shortcut with a letter, number, or function key; Caps Lock is not
+supported for hold-to-talk in this preview. Command+C and Command+V are reserved
+for clipboard operations. The menu-bar icon reopens settings or quits the app;
+Command+Q also quits and Command+, opens Settings.
+
+CI checks the arm64 build, Rust tests, app bundle, code signature, command-line
+startup, and Metal worker protocol/lifetime. The hosted runner has no Metal
+device, so it cannot render GPUI or validate GPU inference. Microphone, hotkeys,
+paste, Keychain prompts, real Google sign-in, and multi-monitor behavior still
+need hands-on testing on a Mac. This is a preview, not a stable macOS release.
 
 ## Build from source
 
@@ -99,6 +124,20 @@ with `--scale 1.5 --output <directory>/150`.
 The optional npm commands are shortcuts for the PowerShell build scripts. Browser
 assets and Python tools do not ship in the portable package.
 
+On an Apple silicon Mac, install the Xcode command-line tools, Rust, CMake, and
+Python 3, then run:
+
+```sh
+bash scripts/build-macos.sh
+cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+python3 scripts/package-macos.py
+python3 scripts/test-macos-package.py dist/Annotate-*-macos-arm64.zip
+```
+
+The macOS build uses Metal rather than the Vulkan SDK. Packaging writes an
+ad-hoc signed app in a ZIP and DMG under `dist/`; Developer ID signing and
+notarization are not configured.
+
 ## Google Drive sync for local builds
 
 Create a Google OAuth client with the **Desktop app** application type, then
@@ -121,6 +160,8 @@ Settings remain in `%APPDATA%\com.annotate.app`; models and native dictionary an
 history data remain in `%LOCALAPPDATA%\com.annotate.app`. Existing dictionary and
 history data are imported from the previous browser profile without opening a
 browser. Replacing the extracted app folder preserves the data in your profile.
+The macOS preview stores settings and data in
+`~/Library/Application Support/com.annotate.app`, with secrets in Keychain.
 
 ## License
 

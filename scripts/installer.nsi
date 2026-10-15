@@ -37,7 +37,10 @@ BrandingText "${PRODUCT} ${VERSION}"
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
-VIProductVersion "${VERSION}.0"
+!ifndef NUMERIC_VERSION
+  !define NUMERIC_VERSION "${VERSION}"
+!endif
+VIProductVersion "${NUMERIC_VERSION}.0"
 VIAddVersionKey "ProductName" "${PRODUCT}"
 VIAddVersionKey "FileDescription" "${PRODUCT} Setup"
 VIAddVersionKey "ProductVersion" "${VERSION}"

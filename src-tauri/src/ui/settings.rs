@@ -7,6 +7,12 @@ use crate::native_onboarding::{self as setup, Status};
 use gpui::{div, img, prelude::*, px, Context, Div, Image, ImageFormat, SharedString, Window};
 use std::sync::Arc;
 
+const GPU_NAME: &str = if cfg!(target_os = "macos") {
+    "Metal"
+} else {
+    "Vulkan"
+};
+
 pub const LANGUAGES: [(&str, &str); 21] = [
     ("auto", "Auto-detect"),
     ("en", "English"),
@@ -124,12 +130,12 @@ impl MainWindow {
             }
             .into()
         } else if loading {
-            "Loading model (Vulkan)…".into()
+            format!("Loading model ({GPU_NAME})…")
         } else if loaded {
             if key == "whisper" {
-                "Model ready (Vulkan)"
+                format!("Model ready ({GPU_NAME})")
             } else {
-                "Model ready"
+                "Model ready".into()
             }
             .into()
         } else if downloaded {
@@ -612,6 +618,11 @@ impl MainWindow {
                     )),
             )
             .when(mode == "local", |column| {
+                let (backend, label, hint) = if cfg!(target_os = "macos") {
+                    ("metal", "Metal (Apple silicon)", "Runs on the Apple GPU through Metal. No extra download needed.")
+                } else {
+                    ("vulkan", "Vulkan (AMD / Intel / NVIDIA)", "Runs on any GPU with a Vulkan 1.2+ driver. No extra download needed.")
+                };
                 column
                     .child(ui::divider(&t))
                     .child(
@@ -619,15 +630,12 @@ impl MainWindow {
                             .child(ui::label("GPU Acceleration", &t))
                             .child(self.select(
                                 "acceleration-select",
-                                vec![(
-                                    "vulkan".into(),
-                                    "Vulkan (AMD / Intel / NVIDIA)".into(),
-                                )],
-                                "vulkan",
+                                vec![(backend.into(), label.into())],
+                                backend,
                                 cx,
                             ))
                             .child(ui::hint(
-                                "Runs on any GPU with a Vulkan 1.2+ driver. No extra download needed.",
+                                hint,
                                 &t,
                             )),
                     )

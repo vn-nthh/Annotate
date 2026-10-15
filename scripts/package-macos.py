@@ -11,6 +11,7 @@ import tempfile
 
 root = Path(__file__).resolve().parent.parent
 version = re.search(r'^version\s*=\s*"([^"]+)"', (root/'src-tauri/Cargo.toml').read_text(), re.M)[1]
+numeric_version = version.split('-', 1)[0]
 target = Path(os.environ.get('CARGO_TARGET_DIR', root/'src-tauri/target'))
 release = target/'aarch64-apple-darwin/release'
 dist = root/'dist'
@@ -36,7 +37,8 @@ with tempfile.TemporaryDirectory(prefix='annotate-macos-') as temporary:
         'CFBundleName': 'Annotate', 'CFBundleDisplayName': 'Annotate',
         'CFBundleIdentifier': 'com.annotate.app', 'CFBundleExecutable': 'annotate',
         'CFBundlePackageType': 'APPL', 'CFBundleIconFile': 'icon.icns',
-        'CFBundleShortVersionString': version, 'CFBundleVersion': version,
+        'CFBundleShortVersionString': numeric_version, 'CFBundleVersion': numeric_version,
+        'CFBundleGetInfoString': f'Annotate {version}',
         'LSMinimumSystemVersion': '13.0', 'NSHighResolutionCapable': True,
         'NSMicrophoneUsageDescription': 'Annotate records audio while you hold your transcription hotkey.',
         'NSPrincipalClass': 'NSApplication',

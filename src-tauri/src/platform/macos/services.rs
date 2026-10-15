@@ -167,7 +167,7 @@ pub fn start(instance: &Instance) -> Result<(), String> {
                 observer,
             })
         });
-        Ok(())
+        Ok::<(), String>(())
     })?;
     let mut file = &instance.file;
     file.seek(SeekFrom::Start(0))
@@ -256,7 +256,7 @@ pub fn pressed_shortcut() -> Option<String> {
             return None;
         }
         let code: u16 = msg_send![event, keyCode];
-        if matches!(code, 54..=63) {
+        if matches!(code, 54..=56 | 58..=63) {
             return None;
         }
         let flags: u64 = msg_send![event, modifierFlags];
@@ -265,7 +265,7 @@ pub fn pressed_shortcut() -> Option<String> {
             (1 << 18, "Ctrl"),
             (1 << 19, "Alt"),
             (1 << 17, "Shift"),
-            (1 << 20, "Super"),
+            (1 << 20, "Cmd"),
         ] {
             if flags & flag != 0 {
                 parts.push(name.to_owned());
@@ -329,6 +329,25 @@ pub fn key_name(code: u16) -> String {
         50 => "Backquote",
         51 => "Backspace",
         53 => "Escape",
+        57 => "CapsLock",
+        65 => "NumpadDecimal",
+        67 => "NumpadMultiply",
+        69 => "NumpadAdd",
+        71 => "NumLock",
+        75 => "NumpadDivide",
+        76 => "NumpadEnter",
+        78 => "NumpadSubtract",
+        81 => "NumpadEqual",
+        82 => "Numpad0",
+        83 => "Numpad1",
+        84 => "Numpad2",
+        85 => "Numpad3",
+        86 => "Numpad4",
+        87 => "Numpad5",
+        88 => "Numpad6",
+        89 => "Numpad7",
+        91 => "Numpad8",
+        92 => "Numpad9",
         64 => "F17",
         79 => "F18",
         80 => "F19",

@@ -11,7 +11,8 @@ Annotate is a push-to-talk transcription app: hold a hotkey, speak, release,
 and the text is pasted into the active application. It is one native process.
 The UI is built with GPUI 0.2 (Zed's GPU-accelerated framework); operating-system
 services sit behind `src-tauri/src/platform`, so the UI and app core can be
-shared with a macOS port. Windows is the only implemented platform today.
+shared with macOS. Windows is stable; Apple silicon is a preview whose rendered
+UI and hardware behavior still need a physical Mac check.
 
 - `src/ui/`: GPUI views (window, panels, setup guide, recording overlay,
   text field, controls) and the reference-capture mode.
@@ -19,6 +20,10 @@ shared with a macOS port. Windows is the only implemented platform today.
   single instance, clipboard and synthetic paste/copy, file dialogs, and the
   overlay's click-through window styles, WASAPI capture, locale collation,
   legacy profile access, and child-process lifetime.
+- `src/platform/macos/`: AppKit/Carbon shortcuts and menu bar, CoreAudio capture,
+  clipboard and synthetic input, native file sheets, storage and window services.
+  Platform work stays on GPUI's main run loop or the shared tokio workers;
+  microphone streams and their worker thread exist only while recording.
 - `src/native_core.rs`: app state and actions; `native_data`, `native_sync`,
   `native_migrate`, `native_onboarding`: storage, Drive sync, Tauri data import,
   setup-guide state. These are UI-independent.
@@ -58,7 +63,7 @@ the most recent reference implementation of the same behavior.
 
 ### Intentional removals (not parity gaps)
 
-- **CUDA** is removed; local Whisper uses the Vulkan worker only.
+- **CUDA** is removed; local Whisper uses Vulkan on Windows and Metal on macOS.
 - **Web Speech / browser transcription** is removed; there is no browser engine.
 - There is no WebView2, Node.js, or frontend runtime. Never reintroduce one,
   even for a single screen.
@@ -186,11 +191,13 @@ resulting `WM_SIZE` arrives while the app is borrowed and GPUI drops it).
   no speculative abstractions.
 - Anything OS-specific belongs in `src/platform/<os>/` behind the functions
   `src/platform/mod.rs` re-exports; UI and core code must not call Win32.
-- Secrets (API keys, Google refresh tokens) live in Windows Credential Manager,
+- Secrets (API keys, Google refresh tokens) live in Windows Credential Manager
+  or macOS Keychain,
   never in settings files or logs. `src/oauth.config.json` is gitignored.
 - Settings stay in `%APPDATA%\com.annotate.app` and data/models in
   `%LOCALAPPDATA%\com.annotate.app`. Keep setting names and credential names
   compatible with the Tauri app so upgrades are seamless.
+- macOS settings and data share `~/Library/Application Support/com.annotate.app`.
 - Commit messages use Conventional Commits with a scope:
   `fix(ui): ...`, `fix(native): ...`, `perf(whisper): ...`, `feat(overlay): ...`.
 
@@ -222,6 +229,14 @@ failed capture or interaction check.
 For changes that could affect footprint or startup, run
 `scripts/benchmark-native.ps1 -NativeExecutable <path>` and compare against the
 numbers above. For packaging changes, run `scripts/test-native-package.ps1`.
+
+For Apple silicon, use `scripts/build-macos.sh`, Rust tests with
+`--target aarch64-apple-darwin`, `scripts/package-macos.py`, and
+`scripts/test-macos-package.py`. The macOS hosted runner has no Metal device.
+Its CLI, bundle/signature, and worker checks do not validate rendered GPUI,
+microphone, hotkeys, paste, Keychain prompts, or GPU inference. Never report
+those as passing without a physical Mac test. The preview is ad-hoc signed,
+not notarized, and does not support Caps Lock hold-to-talk.
 
 Report results honestly: say which checks ran, which did not (live Groq/Azure/
 OpenRouter calls, real Google sign-in, and live microphone input are not

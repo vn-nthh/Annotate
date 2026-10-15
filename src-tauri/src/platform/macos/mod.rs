@@ -18,9 +18,7 @@ use util::{nsstr, on_main, post_main, string};
 pub use audio::{enumerate_capture_devices, Capture};
 pub use data::{compare_terms, legacy_storage_paths, lock_legacy_storage};
 pub use input::{capture_selected_text, paste_text, sanitize_text_for_input, set_clipboard_text};
-pub use services::{
-    acquire_instance, key_name, pressed_shortcut, register as register_shortcut, Instance,
-};
+pub use services::{acquire_instance, pressed_shortcut, register as register_shortcut, Instance};
 #[cfg(test)]
 pub use worker::test_worker;
 pub use worker::{
@@ -77,7 +75,8 @@ pub fn prepare_overlay(window: &impl HasWindowHandle, _: f32, _: f32, _: f32) {
         if window == nil {
             return;
         }
-        let _: () = msg_send![window, setStyleMask: 0usize];
+        // GPUI's PopUp is already a borderless nonactivating NSPanel.
+        let _: () = msg_send![window, setHidesOnDeactivate: NO];
         let _: () = msg_send![window, setIgnoresMouseEvents: YES];
         let _: () = msg_send![window, setHasShadow: NO];
         let _: () = msg_send![window, setOpaque: NO];

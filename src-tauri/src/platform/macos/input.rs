@@ -4,11 +4,22 @@ use cocoa::base::{id, nil, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl};
 use std::{
     ffi::c_void,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard, TryLockError},
     time::{Duration, Instant},
 };
 
 static INPUT: Mutex<()> = Mutex::new(());
+
+fn input_guard() -> Result<MutexGuard<'static, ()>, String> {
+    // A UI copy action must not wait for a worker that is awaiting AppKit.
+    match INPUT.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(TryLockError::Poisoned(error)) => Ok(error.into_inner()),
+        Err(TryLockError::WouldBlock) => {
+            Err("Another clipboard action is in progress. Try again.".into())
+        }
+    }
+}
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXIsProcessTrusted() -> bool;
@@ -37,12 +48,17 @@ fn command(key: u16) -> Result<(), String> {
             return Err("No application is available for keyboard input".into());
         }
         let pid: i32 = msg_send![application, processIdentifier];
-        for down in [true, false] {
-            let event = CGEventCreateKeyboardEvent(std::ptr::null(), key, down);
-            if event.is_null() {
-                return Err("macOS could not create a keyboard event".into());
-            }
-            CGEventSetFlags(event, if down { 1 << 20 } else { 0 });
+        let down = CGEventCreateKeyboardEvent(std::ptr::null(), key, true);
+        if down.is_null() {
+            return Err("macOS could not create a keyboard event".into());
+        }
+        let up = CGEventCreateKeyboardEvent(std::ptr::null(), key, false);
+        if up.is_null() {
+            CFRelease(down);
+            return Err("macOS could not create a keyboard event".into());
+        }
+        for (event, flags) in [(down, 1 << 20), (up, 0)] {
+            CGEventSetFlags(event, flags);
             CGEventPostToPid(pid, event);
             CFRelease(event);
         }
@@ -72,13 +88,13 @@ fn write(text: &str) -> Result<isize, String> {
     })
 }
 pub fn set_clipboard_text(text: &str) -> Result<(), String> {
-    let _guard = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = input_guard()?;
     write(text).map(|_| ())
 }
 pub fn paste_text(text: &str) -> Result<(), String> {
-    let _guard = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = input_guard()?;
     let count = write(&sanitize_text_for_input(text))?;
-    command(9)?;
+    let result = command(9);
     crate::app::spawn(async move {
         tokio::time::sleep(Duration::from_millis(220)).await;
         on_main(move || unsafe {
@@ -89,7 +105,7 @@ pub fn paste_text(text: &str) -> Result<(), String> {
             }
         });
     });
-    Ok(())
+    result
 }
 
 type Contents = Vec<Vec<(String, Vec<u8>)>>;
@@ -147,7 +163,7 @@ fn restore(contents: Contents, expected: isize) {
     });
 }
 pub fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String> {
-    let _guard = INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = input_guard()?;
     std::thread::sleep(Duration::from_millis(
         release_delay_ms.unwrap_or(100).min(500),
     ));

@@ -353,13 +353,13 @@
             <label class="setting-label" for="acceleration-select">GPU Acceleration</label>
             <div class="select-wrap">
               <select id="acceleration-select">
-                <option value="vulkan">Vulkan (AMD / Intel / NVIDIA)</option>
+                <option value="vulkan" data-macos="Metal (Apple silicon)" data-macos-value="metal">Vulkan (AMD / Intel / NVIDIA)</option>
               </select>
               <span class="select-arrow">
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
               </span>
             </div>
-            <p class="setting-hint">Runs on any GPU with a Vulkan 1.2+ driver. No extra download needed.</p>
+            <p class="setting-hint" data-macos="Runs on the Apple GPU through Metal. No extra download needed.">Runs on any GPU with a Vulkan 1.2+ driver. No extra download needed.</p>
           </section>
           <section class="setting-group">
             <label class="setting-label">Model Status</label>
@@ -541,7 +541,7 @@
             <ol class="ob-list">
               <li><span class="ob-num">1</span><span>Open the Groq console and sign in. It's free.</span></li>
               <li><span class="ob-num">2</span><span>Create a key under API Keys and copy it.</span></li>
-              <li><span class="ob-num">3</span><span>Paste it below. It's stored in Windows Credential Manager.</span></li>
+              <li><span class="ob-num">3</span><span data-macos="Paste it below. It's stored in your macOS Keychain.">Paste it below. It's stored in Windows Credential Manager.</span></li>
             </ol>
             <button class="ob-link-btn" id="ob-open-groq" title="Opens console.groq.com in your browser">Open Groq console <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg></button>
             <section class="ob-field">
@@ -573,7 +573,7 @@
           </div>
           <div class="ob-install" data-engine="local">
             <h2 class="ob-title">Download the local model</h2>
-            <p class="ob-desc">Whisper Large v3 Turbo runs on your graphics card through Vulkan, so dictation works offline and stays on this PC.</p>
+            <p class="ob-desc" data-macos="Whisper Large v3 Turbo runs on the Apple GPU through Metal, so dictation works offline and stays on this Mac.">Whisper Large v3 Turbo runs on your graphics card through Vulkan, so dictation works offline and stays on this PC.</p>
             <div class="ob-model">
               <div class="ob-model-row">
                 <div class="ob-model-info">
@@ -585,14 +585,14 @@
               <div class="ob-progress" id="ob-progress"><div class="ob-progress-fill" id="ob-progress-fill"></div></div>
               <span class="ob-progress-text" id="ob-progress-text">219 MB of 547 MB</span>
             </div>
-            <p class="setting-hint">Needs a graphics card with a current Vulkan driver (AMD, Intel, or NVIDIA). You can pause the download and resume it later.</p>
+            <p class="setting-hint" data-macos="Uses the Apple GPU. You can pause the download and resume it later.">Needs a graphics card with a current Vulkan driver (AMD, Intel, or NVIDIA). You can pause the download and resume it later.</p>
           </div>
         </div>
 
         <!-- 3. Microphone -->
         <div class="ob-step" data-step="microphone">
           <h2 class="ob-title">Pick your microphone</h2>
-          <p class="ob-desc">Annotate only listens while you hold the hotkey.</p>
+          <p class="ob-desc" data-macos="Annotate only listens while you hold the hotkey. Allow microphone access when macOS asks.">Annotate only listens while you hold the hotkey.</p>
           <section class="ob-field ob-field-first">
             <label class="setting-label" for="ob-mic-select">Microphone</label>
             <div class="select-wrap">
@@ -652,7 +652,7 @@
               <button class="ob-chip" id="ob-chip-0">Ctrl+Shift+Space</button>
               <button class="ob-chip" id="ob-chip-1">Ctrl+Alt+Space</button>
             </div>
-            <p class="setting-hint">Pick keys you don't use for anything else. Press Esc to cancel recording.</p>
+            <p class="setting-hint" data-macos="Choose a letter, number, or function key. Caps Lock is unavailable in this preview. Press Esc to cancel.">Pick keys you don't use for anything else. Press Esc to cancel recording.</p>
           </section>
         </div>
 
