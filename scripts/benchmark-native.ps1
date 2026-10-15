@@ -60,6 +60,7 @@ function Read-ProcessTree([int]$RootId, [hashtable]$Owned) {
       $details += [pscustomobject]@{
         processId = $processId; name = $item.ProcessName
         workingSetBytes = $item.WorkingSet64; privateBytes = $item.PrivateMemorySize64
+        cpuTimeMs = $item.TotalProcessorTime.TotalMilliseconds
       }
     } catch { } finally { if ($item) { $item.Dispose() } }
   }
@@ -68,6 +69,7 @@ function Read-ProcessTree([int]$RootId, [hashtable]$Owned) {
     processCount = $details.Count
     workingSetBytes = [long](($details | Measure-Object workingSetBytes -Sum).Sum)
     privateBytes = [long](($details | Measure-Object privateBytes -Sum).Sum)
+    sampledAtMs = [Diagnostics.Stopwatch]::GetTimestamp() * 1000.0 / [Diagnostics.Stopwatch]::Frequency
     processes = $details
   }
 }
@@ -86,10 +88,15 @@ function Read-Phase([int]$ProcessId, [hashtable]$Owned) {
     $samples += Read-ProcessTree $ProcessId $Owned
     if ($sampleIndex -lt 5) { Start-Sleep -Milliseconds 200 }
   }
+  $first = $samples[0]
+  $last = $samples[-1]
+  $cpuDelta = ($last.processes | Where-Object processId -eq $ProcessId).cpuTimeMs -
+    ($first.processes | Where-Object processId -eq $ProcessId).cpuTimeMs
   [pscustomobject]@{
     workingSetMiB = [Math]::Round((Median $samples.workingSetBytes) / 1MB, 2)
     privateMiB = [Math]::Round((Median $samples.privateBytes) / 1MB, 2)
     processCount = (Median $samples.processCount)
+    idleCpuPercent = [Math]::Round(100 * $cpuDelta / ($last.sampledAtMs - $first.sampledAtMs), 2)
     samples = $samples
   }
 }
@@ -166,6 +173,8 @@ foreach ($application in $applications) {
     openPrivateMiB = (Median $data.open.privateMiB)
     trayWorkingSetMiB = (Median $data.tray.workingSetMiB)
     trayPrivateMiB = (Median $data.tray.privateMiB)
+    openIdleCpuPercent = (Median $data.open.idleCpuPercent)
+    trayIdleCpuPercent = (Median $data.tray.idleCpuPercent)
     openProcesses = (Median $data.open.processCount)
     trayProcesses = (Median $data.tray.processCount)
   }
@@ -175,7 +184,7 @@ $report = [pscustomobject]@{
   operatingSystem = [Environment]::OSVersion.VersionString
   processor = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
   executables = @($applications | ForEach-Object { [pscustomobject]@{ name = $_.Name; path = $_.Path; sha256 = (Get-FileHash -LiteralPath $_.Path -Algorithm SHA256).Hash } })
-  conditions = 'Warm filesystem cache; reused isolated WebView profile; empty Home/default settings; exact offline Satoshi fonts; no credentials, microphone, models, hotkeys or network bootstrap; Tauri capture-device override watcher disabled. Ready means completed native render or DOM + fonts + two animation frames. Each memory phase waits 2s then takes 5 process-tree samples. Working set sums include shared pages; private bytes count committed private memory, not physical RAM.'
+  conditions = 'Warm filesystem cache; empty Home/default settings; exact offline Satoshi fonts; no credentials, microphone, models, hotkeys or network bootstrap. GPUI ready means entry into the first view render, before GPU presentation; the optional isolated Tauri baseline uses DOM + fonts + two animation frames. Each memory phase waits 2s then takes 5 process-tree samples. Working set sums include shared pages; private bytes count committed private memory, not physical RAM. Idle CPU uses root-process CPU-time growth between the first and last phase samples; 100% means one logical core. The opt-in benchmark polling thread is included.'
   summary = $summary; runs = $runsData
 }
 $reportPath = Join-Path $outputPath 'results.json'

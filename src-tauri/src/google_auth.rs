@@ -78,7 +78,7 @@ pub async fn google_oauth(client_id: String, scopes: String) -> Result<OAuthToke
     let state = random_base64url(32);
     let verifier = random_base64url(32);
     let challenge = pkce_challenge(&verifier);
-    let code = crate::native_app::spawn_blocking({
+    let code = crate::app::spawn_blocking({
         let client_id = client_id.clone();
         let scopes = scopes.clone();
         let state = state.clone();

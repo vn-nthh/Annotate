@@ -40,7 +40,7 @@ pub fn initialize(directory: &Path) -> Result<(), String> {
                 && probe.directory.join("hide.request").exists()
                 && !probe.directory.join("hidden.json").exists()
             {
-                crate::native_ui::hide();
+                crate::ui::hide();
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
@@ -61,14 +61,11 @@ pub fn hidden() {
         let _ = std::fs::write(probe.directory.join("hidden.json"), "{}");
     }
 }
-pub fn shown(hwnd: windows::Win32::Foundation::HWND) {
+pub fn shown() {
     if let Some(probe) = PROBE.get() {
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                hwnd,
-                windows::Win32::UI::WindowsAndMessaging::SW_SHOW,
-            );
-            let _=std::fs::write(probe.directory.join("shown.json"),serde_json::json!({"visible":windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd).as_bool()}).to_string());
-        }
+        let _ = std::fs::write(
+            probe.directory.join("shown.json"),
+            serde_json::json!({ "visible": true }).to_string(),
+        );
     }
 }

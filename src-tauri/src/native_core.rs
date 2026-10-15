@@ -1,5 +1,5 @@
 //! App state and actions shared by the native window and global shortcuts.
-use crate::native_app::{self, AppHandle};
+use crate::app::{self as native_app, AppHandle};
 use crate::{native_audio, native_data, subtitle::SrtEntry};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -15,6 +15,9 @@ static CORE: OnceLock<Arc<Core>> = OnceLock::new();
 const MAX_CAPTURED_TERM_CHARS: usize = 100;
 pub fn get() -> &'static Arc<Core> {
     CORE.get().expect("native app initialized")
+}
+pub fn try_get() -> Option<&'static Arc<Core>> {
+    CORE.get()
 }
 
 #[derive(Clone)]
@@ -98,7 +101,7 @@ impl RecordingConfig {
     }
 }
 struct Session {
-    capture: native_audio::Capture,
+    capture: crate::platform::Capture,
     config: RecordingConfig,
 }
 #[derive(Default)]
@@ -222,7 +225,7 @@ impl Core {
     }
     pub fn change(&self, f: impl FnOnce(&mut State)) {
         f(&mut self.state.lock().unwrap_or_else(|e| e.into_inner()));
-        crate::native_ui::refresh();
+        crate::ui::refresh();
     }
     pub fn status(&self, text: &str, error: bool) {
         let generation = self.status_generation.fetch_add(1, Ordering::AcqRel) + 1;
@@ -258,7 +261,7 @@ impl Core {
             self.status(&error, true);
             false
         } else {
-            crate::native_ui::refresh();
+            crate::ui::refresh();
             self.schedule_sync();
             true
         }
@@ -273,7 +276,7 @@ impl Core {
     }
 
     pub fn copy_text(&self, text: &str) -> Result<(), String> {
-        let result = crate::set_clipboard_unicode_text(&normalize_output(text));
+        let result = crate::platform::set_clipboard_text(&normalize_output(text));
         if let Err(error) = &result {
             self.status(error, true);
         }
@@ -341,7 +344,7 @@ impl Core {
                 }
             };
             if needs_setup {
-                crate::native_ui::show_settings();
+                crate::ui::show_settings();
                 core.status("Add an API key", true);
             }
             core.update_partial_download();
@@ -433,7 +436,7 @@ impl Core {
         .map_err(|e| e.to_string())
         .and_then(|result| result)
         .map_err(|error| format!("Cannot import previous data: {error}"))?;
-        crate::native_ui::refresh();
+        crate::ui::refresh();
         Ok(())
     }
     pub fn schedule_sync(&self) {
@@ -594,8 +597,8 @@ impl Core {
                     Err(error) => self.status(&error, true),
                 }
             }
-            "sub-file-zone" => crate::native_ui::pick_file(false),
-            "sub-save-btn" => crate::native_ui::pick_file(true),
+            "sub-file-zone" => crate::ui::pick_file(false),
+            "sub-save-btn" => crate::ui::pick_file(true),
             "sub-new-btn" => self.change(|s| {
                 s.file = None;
                 s.entries.clear();
@@ -652,7 +655,7 @@ impl Core {
                         state.labels.remove(&format!("{key}-status-error"));
                     }
                 }
-                crate::native_ui::refresh();
+                crate::ui::refresh();
                 let id = id.to_owned();
                 native_app::spawn(async move {
                     let mut result = get().async_action(&id).await;
@@ -895,7 +898,7 @@ impl Core {
                 return;
             }
             recording.active = false;
-            let _ = crate::throbber::hide();
+            let _ = crate::ui::overlay::hide();
             self.change(|s| {
                 s.labels.insert("status-detail".into(), error);
             });
@@ -973,7 +976,7 @@ impl Core {
             let generation = recording.generation;
             recording.active = true;
             self.status("Listening…", false);
-            let _ = crate::throbber::show_listening();
+            let _ = crate::ui::overlay::show_listening();
             if config.mode == "azure-mai" {
                 let endpoint = config.endpoint.clone();
                 native_app::spawn(async move {
@@ -997,7 +1000,7 @@ impl Core {
                 });
             }
             let capture =
-                native_audio::Capture::start_with_error(config.device.clone(), move |error| {
+                crate::platform::Capture::start_with_error(config.device.clone(), move |error| {
                     get().capture_failed(generation, error)
                 });
             recording.session = Some(Session { capture, config });
@@ -1012,7 +1015,7 @@ impl Core {
                 recording.processing = session.is_some();
                 (recording.generation, session)
             };
-            let _ = crate::throbber::hide();
+            let _ = crate::ui::overlay::hide();
             if let (generation, Some(session)) = session {
                 self.status("Transcribing…", false);
                 native_app::spawn(async move {
@@ -1061,12 +1064,12 @@ impl Core {
             .any(|existing| native_data::key(&existing.value) == normalized);
         if duplicate {
             self.status(&format!("\"{short}\" already in dictionary"), false);
-            let _ = crate::throbber::show_confirmation("duplicate", short);
+            let _ = crate::ui::overlay::show_confirmation("duplicate", short);
         } else if self.data_change(|d| {
             d.dictionary.add(&term);
         }) {
             self.status(&format!("Added \"{short}\""), false);
-            let _ = crate::throbber::show_confirmation("added", short);
+            let _ = crate::ui::overlay::show_confirmation("added", short);
         }
     }
 
@@ -1216,17 +1219,8 @@ fn mutate_data(
 }
 
 pub fn normalize_output(text: &str) -> String {
-    use windows::Win32::Globalization::{NormalizationC, NormalizeString};
-    let source: Vec<_> = text.encode_utf16().collect();
-    let needed = unsafe { NormalizeString(NormalizationC, &source, None) };
-    let mut output = vec![0u16; needed.unsigned_abs() as usize];
-    let length = unsafe { NormalizeString(NormalizationC, &source, Some(&mut output)) };
-    let normalized = if length > 0 {
-        String::from_utf16_lossy(&output[..length as usize])
-    } else {
-        text.into()
-    };
-    crate::sanitize_text_for_input(&normalized)
+    use unicode_normalization::UnicodeNormalization;
+    crate::platform::sanitize_text_for_input(&text.nfc().collect::<String>())
 }
 
 #[cfg(test)]

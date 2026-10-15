@@ -52,22 +52,23 @@ $startInfo.RedirectStandardError = $true
 $process = [Diagnostics.Process]::Start($startInfo)
 try {
   $appErrors = $process.StandardError.ReadToEndAsync()
-  if (-not $process.WaitForExit(60000)) { $process.Kill(); throw "Packaged UI capture timed out; files remain at $testDir" }
+  if (-not $process.WaitForExit(90000)) { $process.Kill(); throw "Packaged UI capture timed out; files remain at $testDir" }
   if ($process.ExitCode -ne 0) { throw "Packaged UI capture failed: $($appErrors.GetAwaiter().GetResult())" }
 } finally { $process.Dispose() }
 $sceneCount = @(Get-ChildItem -LiteralPath $captureDir -Filter '*.png').Count
+$scaledCount = @(Get-ChildItem -LiteralPath (Join-Path $captureDir '150') -Filter '*.png' -ErrorAction SilentlyContinue).Count
 $checksPath = Join-Path $captureDir 'checks.json'
-if (-not (Test-Path -LiteralPath (Join-Path $captureDir 'controls.json')) -or
-    -not (Test-Path -LiteralPath $checksPath) -or $sceneCount -lt 56) {
+if (-not (Test-Path -LiteralPath $checksPath) -or $sceneCount -lt 80 -or
+    $scaledCount -lt 8) {
   throw "Packaged app did not render its native test screens; files remain at $testDir"
 }
 $checksJson = Get-Content -LiteralPath $checksPath -Raw -Encoding UTF8
 $checks = ConvertFrom-Json -InputObject $checksJson
-if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -eq 0 -or
+if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -lt 33 -or
     @($checks | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
   throw "Packaged UI harness produced no valid passed-check array; files remain at $testDir"
 }
-Write-Host "Native app rendered $sceneCount scenes and passed $($checks.Count) checks; its Vulkan worker responds in isolation."
+Write-Host "Native app rendered $sceneCount scenes plus $scaledCount at 150% and passed $($checks.Count) checks; its Vulkan worker responds in isolation."
 # The test owns this unique temporary directory.
 if ([IO.Path]::GetFullPath((Split-Path -Parent $testDir)) -ne $temporaryRoot.TrimEnd('\') -or
     (Split-Path -Leaf $testDir) -notlike 'annotate-package-smoke-*') { throw 'Invalid smoke-test cleanup path.' }

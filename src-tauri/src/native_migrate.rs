@@ -217,23 +217,7 @@ fn validate_files(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 fn read_copy(source: &Path, directory: &Path) -> Result<(Value, Value), String> {
-    use std::os::windows::fs::OpenOptionsExt;
-    let lock = source.join("LOCK");
-    // Holding the existing LOCK file read-only with no sharing prevents an old
-    // WebView from opening/writing this profile halfway through the snapshot.
-    let _lock = match std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(0)
-        .open(&lock)
-    {
-        Ok(file) => Some(file),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => {
-            return Err(format!(
-                "Close the previous Annotate before importing its data: {e}"
-            ))
-        }
-    };
+    let _lock = crate::platform::lock_legacy_storage(source)?;
     let copy = directory.join(format!(
         "legacy-import-{}-{}-{:x}",
         std::process::id(),
@@ -330,11 +314,7 @@ fn read_copy(source: &Path, directory: &Path) -> Result<(Value, Value), String> 
     result
 }
 pub fn read_legacy(directory: &Path) -> Result<(Value, Value), String> {
-    let candidates = [
-        directory.join("EBWebView/Default/Local Storage/leveldb"),
-        directory.join(".WebView2/EBWebView/Default/Local Storage/leveldb"),
-        directory.join("WebView2/EBWebView/Default/Local Storage/leveldb"),
-    ];
+    let candidates = crate::platform::legacy_storage_paths(directory);
     let mut dictionary = Dictionary::default();
     let mut history = History::default();
     let mut has_dictionary = false;

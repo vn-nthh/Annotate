@@ -1,6 +1,6 @@
 //! Native Google Drive sync. Credentials stay in the existing Windows keyring.
 use crate::{
-    native_app,
+    app as native_app,
     native_core::get,
     native_data::{Dictionary, History, Store},
 };
@@ -159,7 +159,7 @@ impl Sync {
             state.avatar_url = url.clone();
             url
         };
-        crate::native_ui::refresh();
+        crate::ui::refresh();
         let Some(url) = url else { return };
         // Avatar downloads run outside refresh/Drive locks and never delay sync.
         native_app::spawn(async move {
@@ -185,7 +185,7 @@ impl Sync {
             {
                 state.avatar = Some(Arc::new(bytes));
                 drop(state);
-                crate::native_ui::refresh();
+                crate::ui::refresh();
             }
         });
     }
@@ -468,7 +468,7 @@ impl Sync {
                 let mut state = get().state.lock().unwrap_or_else(|e| e.into_inner());
                 merge_remote(&mut state.data, &remote, dictionary)?
             };
-            crate::native_ui::refresh();
+            crate::ui::refresh();
             self.session().check(generation)?;
             let nonempty = data
                 .get(if dictionary { "terms" } else { "entries" })
