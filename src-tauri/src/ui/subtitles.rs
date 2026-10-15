@@ -201,7 +201,7 @@ impl MainWindow {
                         cx,
                     )),
             )
-            .when(!(s.file.is_none() && deps_ready), |column| {
+            .when(!deps_ready, |column| {
                 column.child(
                     div()
                         .flex()
@@ -270,7 +270,7 @@ impl MainWindow {
         // preview fills the remaining height and scrolls on its own.
         let column = panel()
             .h_auto()
-            .min_h_full()
+            .min_h(px(super::window::HEIGHT - 48.))
             .child(header("Subtitling", None, &t))
             .children(self.sub_progress())
             .child(

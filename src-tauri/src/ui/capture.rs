@@ -195,7 +195,11 @@ fn scenes(initial: &State) -> Vec<Scene> {
                         .insert("hotkey".into(), json!("Ctrl+Shift+Space"));
                 }
                 scenes.push(Scene {
-                    name: format!("{theme}-onboarding-{step}-{engine}"),
+                    name: if matches!(*step, "model" | "install") {
+                        format!("{theme}-onboarding-{step}-{engine}")
+                    } else {
+                        format!("{theme}-onboarding-{step}")
+                    },
                     tab: "home",
                     modal: false,
                     state,

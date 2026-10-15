@@ -162,7 +162,7 @@ impl MainWindow {
         } else if loaded {
             t.ink
         } else {
-            t.faint
+            t.light
         };
         div()
             .flex()
@@ -464,7 +464,7 @@ impl MainWindow {
             } else {
                 SEMIBOLD
             })
-            .line_height(rem(0.9 * 1.35))
+            .line_height(px(16.))
             .text_color(if value.is_empty() || recording {
                 t.light
             } else {
@@ -542,6 +542,9 @@ impl MainWindow {
         let api_key = self.inputs.api_key.clone();
         let endpoint = self.inputs.endpoint.clone();
         let openrouter = self.inputs.openrouter.clone();
+        // Only the dividers that open the API key and local model sections show:
+        // in the CSS reference the others are bare <hr>s in a scrolling flex
+        // column and shrink to nothing.
         let column = div()
             .flex()
             .flex_col()
@@ -555,13 +558,11 @@ impl MainWindow {
                 &s.setting("audioDeviceId", ""),
                 cx,
             )))
-            .child(ui::divider(&t))
             .child(
                 group()
                     .child(ui::label("Transcription Engine", &t))
                     .child(self.select("mode-select", engines, &mode, cx)),
             )
-            .child(ui::divider(&t))
             .child(group().child(ui::label("Spoken Language", &t)).child(self.select(
                 "live-lang-select",
                 languages(),
@@ -596,7 +597,6 @@ impl MainWindow {
                         )
                     })
             })
-            .child(ui::divider(&t))
             .child(
                 group()
                     .child(ui::label("OpenRouter API Key", &t))
@@ -639,7 +639,6 @@ impl MainWindow {
                         cx,
                     )))
             })
-            .child(ui::divider(&t))
             .child(group().child(switch_row(
                 "theme-toggle",
                 "Dark Mode",
@@ -648,7 +647,6 @@ impl MainWindow {
                 &t,
                 cx,
             )))
-            .child(ui::divider(&t))
             .child(
                 group()
                     .child(switch_row(
@@ -669,9 +667,7 @@ impl MainWindow {
                         )))
                     }),
             )
-            .child(ui::divider(&t))
             .child(self.sync_section(cx))
-            .child(ui::divider(&t))
             .child(
                 group()
                     .child(ui::label("Push-to-Talk Hotkey", &t))
@@ -679,7 +675,6 @@ impl MainWindow {
             )
             .child(
                 group()
-                    .pt(px(0.))
                     .child(ui::label("Dictionary Hotkey", &t))
                     .child(self.hotkey_recorder(
                         "dict-hotkey-recorder",
@@ -721,7 +716,6 @@ impl MainWindow {
                         &t,
                     )),
             )
-            .child(ui::divider(&t))
             .child(
                 group().child(ui::label("Setup Guide", &t)).child(
                     div()

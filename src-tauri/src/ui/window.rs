@@ -1330,7 +1330,7 @@ impl MainWindow {
                 .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
                 .text_size(rem(0.9))
                 .font_weight(NORMAL)
-                .line_height(rem(0.9 * 1.35))
+                .line_height(px(15.))
                 .text_color(t.ink)
                 .child(
                     div()
@@ -1470,7 +1470,7 @@ impl MainWindow {
             .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
             .when(focused.is_focused(window), move |f| f.border_color(t.faint))
             .text_size(rem(0.9))
-            .line_height(rem(0.9 * 1.35))
+            .line_height(px(15.))
             .text_color(t.ink)
             .child(input.clone())
             .when_some(reveal, |field, (id, shown)| {
@@ -1592,6 +1592,8 @@ impl MainWindow {
 
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Benchmark probe: the first frame is about to paint.
+        crate::native_benchmark::ready();
         let t = self.theme;
         let guide = self.setup();
         let body = if guide.is_open() {
