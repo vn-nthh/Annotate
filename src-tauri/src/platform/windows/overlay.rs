@@ -25,6 +25,8 @@ unsafe extern "system" fn overlay_proc(
     _data: usize,
 ) -> LRESULT {
     match msg {
+        // GPUI reserves resize borders even for non-resizable popup windows.
+        WM_NCCALCSIZE => LRESULT(0),
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE),
         PLACE => {
@@ -45,6 +47,13 @@ unsafe extern "system" fn overlay_proc(
 
 pub fn prepare(hwnd: HWND, width: f32, height: f32, bottom: f32) {
     unsafe {
+        // GPUI's PopUp still creates an overlapped window with a native frame.
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(
+            hwnd,
+            GWL_STYLE,
+            (style & !(WS_CAPTION | WS_THICKFRAME).0 as isize) | WS_POPUP.0 as isize,
+        );
         let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         SetWindowLongPtrW(
             hwnd,
@@ -91,7 +100,7 @@ unsafe fn place(hwnd: HWND, width: f32, height: f32, bottom: f32, show: bool) {
         screen_height - height - margin,
         width,
         height,
-        SWP_NOACTIVATE | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW },
+        SWP_NOACTIVATE | SWP_FRAMECHANGED | if show { SWP_SHOWWINDOW } else { SWP_HIDEWINDOW },
     );
 }
 

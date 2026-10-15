@@ -1,12 +1,12 @@
 {
-  "measuredUtc": "2026-10-15T12:29:54.7833771Z",
+  "measuredUtc": "2026-10-15T12:52:52.8114780Z",
   "operatingSystem": "Microsoft Windows NT 10.0.26200.0",
   "processor": "AMD Ryzen 5 5600G with Radeon Graphics         ",
   "executables": [
     {
       "name": "native",
       "path": "annotate.exe",
-      "sha256": "4A1C90684BF95E5615C5BE1298986AFA90E7F4DE4722E9F423489A18E16303FF"
+      "sha256": "C29D29AC3D490F210CFC15C42206C533A39EDAAE01EE9A718AB2D962591AA6DD"
     }
   ],
   "conditions": "Warm filesystem cache; empty Home/default settings; exact offline Satoshi fonts; no credentials, microphone, models, hotkeys or network bootstrap. GPUI ready means entry into the first view render, before GPU presentation; the optional isolated Tauri baseline uses DOM + fonts + two animation frames. Each memory phase waits 2s then takes 5 process-tree samples. Working set sums include shared pages; private bytes count committed private memory, not physical RAM. Idle CPU uses root-process CPU-time growth between the first and last phase samples; 100% means one logical core. The opt-in benchmark polling thread is included.",
@@ -14,13 +14,13 @@
     {
       "application": "native",
       "runs": 3,
-      "uiReadyMs": 482,
-      "processCreatedToReadyMs": 503,
-      "openWorkingSetMiB": 59.59,
-      "openPrivateMiB": 124.83,
-      "trayWorkingSetMiB": 59.28,
-      "trayPrivateMiB": 77.87,
-      "openIdleCpuPercent": 2.46,
+      "uiReadyMs": 509,
+      "processCreatedToReadyMs": 536,
+      "openWorkingSetMiB": 61.71,
+      "openPrivateMiB": 123.21,
+      "trayWorkingSetMiB": 61.19,
+      "trayPrivateMiB": 76.47,
+      "openIdleCpuPercent": 0,
       "trayIdleCpuPercent": 0,
       "openProcesses": 1,
       "trayProcesses": 1
@@ -30,177 +30,177 @@
     {
       "application": "native",
       "run": 1,
-      "uiReadyMs": 485,
-      "processCreatedToReadyMs": 507,
-      "launchToReadyObservedMs": 516.3,
+      "uiReadyMs": 509,
+      "processCreatedToReadyMs": 536,
+      "launchToReadyObservedMs": 565.6,
       "windowVisible": true,
       "ready": {
-        "processId": 24140,
-        "startMs": 1792067372209,
-        "readyMs": 1792067372694,
-        "uiReadyMs": 485
+        "processId": 5988,
+        "startMs": 1792068750142,
+        "readyMs": 1792068750651,
+        "uiReadyMs": 509
       },
       "open": {
-        "workingSetMiB": 59.23,
-        "privateMiB": 124.83,
+        "workingSetMiB": 61.71,
+        "privateMiB": 124.13,
         "processCount": 1,
-        "idleCpuPercent": 1.25,
+        "idleCpuPercent": 0,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62103552,
-            "privateBytes": 130891776,
-            "sampledAtMs": 28132653.3419,
+            "workingSetBytes": 64704512,
+            "privateBytes": 130158592,
+            "sampledAtMs": 29510621.9538,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62103552,
-                "privateBytes": 130891776,
-                "cpuTimeMs": 515.625
+                "workingSetBytes": 64704512,
+                "privateBytes": 130158592,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62103552,
-            "privateBytes": 130891776,
-            "sampledAtMs": 28132958.7808,
+            "workingSetBytes": 64704512,
+            "privateBytes": 130158592,
+            "sampledAtMs": 29510946.0363,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62103552,
-                "privateBytes": 130891776,
-                "cpuTimeMs": 531.25
+                "workingSetBytes": 64704512,
+                "privateBytes": 130158592,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62103552,
-            "privateBytes": 130891776,
-            "sampledAtMs": 28133274.3755,
+            "workingSetBytes": 64704512,
+            "privateBytes": 130158592,
+            "sampledAtMs": 29511263.173,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62103552,
-                "privateBytes": 130891776,
-                "cpuTimeMs": 531.25
+                "workingSetBytes": 64704512,
+                "privateBytes": 130158592,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 61943808,
-            "privateBytes": 82202624,
-            "sampledAtMs": 28133592.8271,
+            "workingSetBytes": 64552960,
+            "privateBytes": 81481728,
+            "sampledAtMs": 29511595.3709,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 61943808,
-                "privateBytes": 82202624,
-                "cpuTimeMs": 531.25
+                "workingSetBytes": 64552960,
+                "privateBytes": 81481728,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 61943808,
-            "privateBytes": 82202624,
-            "sampledAtMs": 28133904.0114,
+            "workingSetBytes": 64544768,
+            "privateBytes": 81473536,
+            "sampledAtMs": 29511928.7165,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 61943808,
-                "privateBytes": 82202624,
-                "cpuTimeMs": 531.25
+                "workingSetBytes": 64544768,
+                "privateBytes": 81473536,
+                "cpuTimeMs": 609.375
               }
             ]
           }
         ]
       },
       "tray": {
-        "workingSetMiB": 59.28,
-        "privateMiB": 78.4,
+        "workingSetMiB": 61.19,
+        "privateMiB": 76.96,
         "processCount": 1,
         "idleCpuPercent": 0,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62177280,
-            "privateBytes": 82227200,
-            "sampledAtMs": 28136106.7497,
+            "workingSetBytes": 64307200,
+            "privateBytes": 80838656,
+            "sampledAtMs": 29514131.3455,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62177280,
-                "privateBytes": 82227200,
-                "cpuTimeMs": 546.875
+                "workingSetBytes": 64307200,
+                "privateBytes": 80838656,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62177280,
-            "privateBytes": 82227200,
-            "sampledAtMs": 28136449.7993,
+            "workingSetBytes": 64307200,
+            "privateBytes": 80838656,
+            "sampledAtMs": 29514443.8995,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62177280,
-                "privateBytes": 82227200,
-                "cpuTimeMs": 546.875
+                "workingSetBytes": 64307200,
+                "privateBytes": 80838656,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62156800,
-            "privateBytes": 82206720,
-            "sampledAtMs": 28136757.6055,
+            "workingSetBytes": 64163840,
+            "privateBytes": 80695296,
+            "sampledAtMs": 29514759.8507,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62156800,
-                "privateBytes": 82206720,
-                "cpuTimeMs": 546.875
+                "workingSetBytes": 64163840,
+                "privateBytes": 80695296,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62033920,
-            "privateBytes": 82083840,
-            "sampledAtMs": 28137084.9575,
+            "workingSetBytes": 64163840,
+            "privateBytes": 80695296,
+            "sampledAtMs": 29515066.2316,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62033920,
-                "privateBytes": 82083840,
-                "cpuTimeMs": 546.875
+                "workingSetBytes": 64163840,
+                "privateBytes": 80695296,
+                "cpuTimeMs": 609.375
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62033920,
-            "privateBytes": 82083840,
-            "sampledAtMs": 28137418.4119,
+            "workingSetBytes": 64163840,
+            "privateBytes": 80695296,
+            "sampledAtMs": 29515381.4385,
             "processes": [
               {
-                "processId": 24140,
+                "processId": 5988,
                 "name": "annotate",
-                "workingSetBytes": 62033920,
-                "privateBytes": 82083840,
-                "cpuTimeMs": 546.875
+                "workingSetBytes": 64163840,
+                "privateBytes": 80695296,
+                "cpuTimeMs": 609.375
               }
             ]
           }
@@ -210,177 +210,177 @@
     {
       "application": "native",
       "run": 2,
-      "uiReadyMs": 471,
-      "processCreatedToReadyMs": 492,
-      "launchToReadyObservedMs": 505.9,
+      "uiReadyMs": 502,
+      "processCreatedToReadyMs": 525,
+      "launchToReadyObservedMs": 543.7,
       "windowVisible": true,
       "ready": {
-        "processId": 13148,
-        "startMs": 1792067379697,
-        "readyMs": 1792067380168,
-        "uiReadyMs": 471
+        "processId": 27276,
+        "startMs": 1792068757632,
+        "readyMs": 1792068758134,
+        "uiReadyMs": 502
       },
       "open": {
-        "workingSetMiB": 59.59,
-        "privateMiB": 123.39,
+        "workingSetMiB": 61.52,
+        "privateMiB": 123.21,
         "processCount": 1,
-        "idleCpuPercent": 4.08,
+        "idleCpuPercent": 1.2,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62488576,
-            "privateBytes": 129384448,
-            "sampledAtMs": 28140160.5999,
+            "workingSetBytes": 64503808,
+            "privateBytes": 129200128,
+            "sampledAtMs": 29518111.4328,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62488576,
-                "privateBytes": 129384448,
-                "cpuTimeMs": 578.125
+                "workingSetBytes": 64503808,
+                "privateBytes": 129200128,
+                "cpuTimeMs": 500
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62488576,
-            "privateBytes": 129384448,
-            "sampledAtMs": 28140544.2239,
+            "workingSetBytes": 64503808,
+            "privateBytes": 129200128,
+            "sampledAtMs": 29518440.808,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62488576,
-                "privateBytes": 129384448,
-                "cpuTimeMs": 609.375
+                "workingSetBytes": 64503808,
+                "privateBytes": 129200128,
+                "cpuTimeMs": 515.625
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62488576,
-            "privateBytes": 129384448,
-            "sampledAtMs": 28140919.8025,
+            "workingSetBytes": 64503808,
+            "privateBytes": 129200128,
+            "sampledAtMs": 29518770.6387,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62488576,
-                "privateBytes": 129384448,
-                "cpuTimeMs": 609.375
+                "workingSetBytes": 64503808,
+                "privateBytes": 129200128,
+                "cpuTimeMs": 515.625
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62328832,
-            "privateBytes": 80695296,
-            "sampledAtMs": 28141293.0408,
+            "workingSetBytes": 64352256,
+            "privateBytes": 80519168,
+            "sampledAtMs": 29519090.4027,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62328832,
-                "privateBytes": 80695296,
-                "cpuTimeMs": 625
+                "workingSetBytes": 64352256,
+                "privateBytes": 80519168,
+                "cpuTimeMs": 515.625
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62328832,
-            "privateBytes": 80695296,
-            "sampledAtMs": 28141693.9177,
+            "workingSetBytes": 64344064,
+            "privateBytes": 80510976,
+            "sampledAtMs": 29519415.7307,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62328832,
-                "privateBytes": 80695296,
-                "cpuTimeMs": 640.625
+                "workingSetBytes": 64344064,
+                "privateBytes": 80510976,
+                "cpuTimeMs": 515.625
               }
             ]
           }
         ]
       },
       "tray": {
-        "workingSetMiB": 59.54,
-        "privateMiB": 76.84,
+        "workingSetMiB": 60.98,
+        "privateMiB": 76,
         "processCount": 1,
-        "idleCpuPercent": 2.48,
+        "idleCpuPercent": 0,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62570496,
-            "privateBytes": 80719872,
-            "sampledAtMs": 28143889.2489,
+            "workingSetBytes": 64090112,
+            "privateBytes": 79831040,
+            "sampledAtMs": 29521639.0607,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62570496,
-                "privateBytes": 80719872,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64090112,
+                "privateBytes": 79831040,
+                "cpuTimeMs": 531.25
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62550016,
-            "privateBytes": 80699392,
-            "sampledAtMs": 28144204.8147,
+            "workingSetBytes": 64090112,
+            "privateBytes": 79831040,
+            "sampledAtMs": 29521954.4571,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62550016,
-                "privateBytes": 80699392,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64090112,
+                "privateBytes": 79831040,
+                "cpuTimeMs": 531.25
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62427136,
-            "privateBytes": 80576512,
-            "sampledAtMs": 28144521.5649,
+            "workingSetBytes": 63946752,
+            "privateBytes": 79687680,
+            "sampledAtMs": 29522272.497,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62427136,
-                "privateBytes": 80576512,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 63946752,
+                "privateBytes": 79687680,
+                "cpuTimeMs": 531.25
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62427136,
-            "privateBytes": 80576512,
-            "sampledAtMs": 28144840.1679,
+            "workingSetBytes": 63946752,
+            "privateBytes": 79687680,
+            "sampledAtMs": 29522597.9255,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62427136,
-                "privateBytes": 80576512,
-                "cpuTimeMs": 671.875
+                "workingSetBytes": 63946752,
+                "privateBytes": 79687680,
+                "cpuTimeMs": 531.25
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62427136,
-            "privateBytes": 80576512,
-            "sampledAtMs": 28145151.0138,
+            "workingSetBytes": 63946752,
+            "privateBytes": 79687680,
+            "sampledAtMs": 29522924.265,
             "processes": [
               {
-                "processId": 13148,
+                "processId": 27276,
                 "name": "annotate",
-                "workingSetBytes": 62427136,
-                "privateBytes": 80576512,
-                "cpuTimeMs": 687.5
+                "workingSetBytes": 63946752,
+                "privateBytes": 79687680,
+                "cpuTimeMs": 531.25
               }
             ]
           }
@@ -390,177 +390,177 @@
     {
       "application": "native",
       "run": 3,
-      "uiReadyMs": 482,
-      "processCreatedToReadyMs": 503,
-      "launchToReadyObservedMs": 510,
+      "uiReadyMs": 516,
+      "processCreatedToReadyMs": 538,
+      "launchToReadyObservedMs": 584.7,
       "windowVisible": true,
       "ready": {
-        "processId": 17588,
-        "startMs": 1792067387403,
-        "readyMs": 1792067387885,
-        "uiReadyMs": 482
+        "processId": 20772,
+        "startMs": 1792068765226,
+        "readyMs": 1792068765742,
+        "uiReadyMs": 516
       },
       "open": {
-        "workingSetMiB": 59.74,
-        "privateMiB": 124.96,
+        "workingSetMiB": 61.73,
+        "privateMiB": 123.02,
         "processCount": 1,
-        "idleCpuPercent": 2.46,
+        "idleCpuPercent": 0,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62640128,
-            "privateBytes": 131035136,
-            "sampledAtMs": 28147830.6786,
+            "workingSetBytes": 64724992,
+            "privateBytes": 128991232,
+            "sampledAtMs": 29525739.9541,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62640128,
-                "privateBytes": 131035136,
-                "cpuTimeMs": 625
+                "workingSetBytes": 64724992,
+                "privateBytes": 128991232,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62640128,
-            "privateBytes": 131035136,
-            "sampledAtMs": 28148142.1763,
+            "workingSetBytes": 64724992,
+            "privateBytes": 128991232,
+            "sampledAtMs": 29526059.6702,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62640128,
-                "privateBytes": 131035136,
-                "cpuTimeMs": 640.625
+                "workingSetBytes": 64724992,
+                "privateBytes": 128991232,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62640128,
-            "privateBytes": 131035136,
-            "sampledAtMs": 28148464.6244,
+            "workingSetBytes": 64724992,
+            "privateBytes": 128991232,
+            "sampledAtMs": 29526378.8758,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62640128,
-                "privateBytes": 131035136,
-                "cpuTimeMs": 640.625
+                "workingSetBytes": 64724992,
+                "privateBytes": 128991232,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62480384,
-            "privateBytes": 82345984,
-            "sampledAtMs": 28148789.9692,
+            "workingSetBytes": 64610304,
+            "privateBytes": 80363520,
+            "sampledAtMs": 29526688.2706,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62480384,
-                "privateBytes": 82345984,
-                "cpuTimeMs": 640.625
+                "workingSetBytes": 64610304,
+                "privateBytes": 80363520,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62480384,
-            "privateBytes": 82345984,
-            "sampledAtMs": 28149102.8596,
+            "workingSetBytes": 64565248,
+            "privateBytes": 80306176,
+            "sampledAtMs": 29527005.5392,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62480384,
-                "privateBytes": 82345984,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64565248,
+                "privateBytes": 80306176,
+                "cpuTimeMs": 578.125
               }
             ]
           }
         ]
       },
       "tray": {
-        "workingSetMiB": 59.27,
-        "privateMiB": 77.87,
+        "workingSetMiB": 61.7,
+        "privateMiB": 76.47,
         "processCount": 1,
-        "idleCpuPercent": 0,
+        "idleCpuPercent": 1.2,
         "samples": [
           {
             "processCount": 1,
-            "workingSetBytes": 62173184,
-            "privateBytes": 81674240,
-            "sampledAtMs": 28151276.0245,
+            "workingSetBytes": 64839680,
+            "privateBytes": 80326656,
+            "sampledAtMs": 29529199.65,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62173184,
-                "privateBytes": 81674240,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64839680,
+                "privateBytes": 80326656,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62173184,
-            "privateBytes": 81674240,
-            "sampledAtMs": 28151582.1603,
+            "workingSetBytes": 64839680,
+            "privateBytes": 80326656,
+            "sampledAtMs": 29529530.2683,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62173184,
-                "privateBytes": 81674240,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64839680,
+                "privateBytes": 80326656,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62152704,
-            "privateBytes": 81653760,
-            "sampledAtMs": 28151898.6784,
+            "workingSetBytes": 64696320,
+            "privateBytes": 80183296,
+            "sampledAtMs": 29529850.3969,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62152704,
-                "privateBytes": 81653760,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64696320,
+                "privateBytes": 80183296,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62029824,
-            "privateBytes": 81530880,
-            "sampledAtMs": 28152228.4612,
+            "workingSetBytes": 64696320,
+            "privateBytes": 80183296,
+            "sampledAtMs": 29530169.9373,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62029824,
-                "privateBytes": 81530880,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64696320,
+                "privateBytes": 80183296,
+                "cpuTimeMs": 578.125
               }
             ]
           },
           {
             "processCount": 1,
-            "workingSetBytes": 62029824,
-            "privateBytes": 81530880,
-            "sampledAtMs": 28152543.0007,
+            "workingSetBytes": 64696320,
+            "privateBytes": 80183296,
+            "sampledAtMs": 29530497.4861,
             "processes": [
               {
-                "processId": 17588,
+                "processId": 20772,
                 "name": "annotate",
-                "workingSetBytes": 62029824,
-                "privateBytes": 81530880,
-                "cpuTimeMs": 656.25
+                "workingSetBytes": 64696320,
+                "privateBytes": 80183296,
+                "cpuTimeMs": 593.75
               }
             ]
           }
@@ -590,6 +590,7 @@
       }
     ],
     "normalExitCode": 0,
-    "errors": ""
+    "errors": "",
+    "revision": "2c7f4f5 (before the overlay frame fix)"
   }
 }

@@ -29,8 +29,8 @@ permissions, model backend, and packaging.
   dictionary typing, edits saved on blur, setup gating/resume/completion,
   simulated recording status, long summaries, and tray teardown/reopening.
   The real overlay HWND is checked during queued show/confirmation/hide for
-  visibility, topmost/tool-window/transparent/nonactivating styles,
-  `HTTRANSPARENT`, `MA_NOACTIVATE`, and an unchanged foreground HWND. Text checks
+  visibility, borderless popup and topmost/tool-window/transparent/nonactivating
+  styles, matching window/client bounds, `HTTRANSPARENT`, `MA_NOACTIVATE`, and an unchanged foreground HWND. Text checks
   include padding caret placement, drags beyond the field, and UTF-16
   preedit/update/commit/replacement of combining marks, CJK, and surrogate pairs
   through the live GPUI input handler.
@@ -49,6 +49,12 @@ permissions, model backend, and packaging.
   copying history, dictionary, and subtitle results on every hover or scroll.
   The final audit's 88 release captures match the previously reviewed release
   captures pixel for pixel.
+- The recording overlay explicitly uses `WS_POPUP` without caption/resize
+  styles and overrides `WM_NCCALCSIZE`, since GPUI otherwise reserves a native
+  frame around its transparent canvas. Placement recalculates that frame from
+  its queued window message; showing and confirming remain nonactivating.
+  A native full-window capture shows only the pill and its dots. Windows reports
+  no non-client rendering, with both outer and client bounds at 260 x 32 pixels.
 
 Regenerate the screenshots outside the checkout:
 
@@ -62,20 +68,20 @@ python scripts/capture-native-reference.py --scale 1.5 --output <reference-direc
 
 [`gpui-benchmark.json`](gpui-benchmark.json) records three measured runs after
 warmup on a Ryzen 5 5600G. Median process creation to first view render was
-503 ms (482 ms from the app's own timing origin). The GPUI timing hook runs
+536 ms (509 ms from the app's own timing origin). The GPUI timing hook runs
 at entry into the first render, before GPU presentation; it is not a measure
 of a completed frame on the display. The benchmark metadata states this.
 
-Median open-window working set was 59.59 MiB, with 124.83 MiB private bytes.
-In the tray it was 59.28 MiB / 77.87 MiB, with one process in both phases.
+Median open-window working set was 61.71 MiB, with 123.21 MiB private bytes.
+In the tray it was 61.19 MiB / 76.47 MiB, with one process in both phases.
 Closing to the tray removes the settings window and its views; GPUI's shared
 GPU device remains resident. Models are not loaded during the benchmark.
 `ANNOTATE_UI_TEST` also skips device discovery, credentials, legacy migration,
 and background artifact checks. These timings measure the UI/runtime, not
 completion of the normal bootstrap.
 
-A separate isolated normal launch (without the benchmark polling thread)
-measured CPU over ten seconds without input: 46.875 ms with the window open
+An earlier isolated normal launch (before the overlay frame fix, without the
+benchmark polling thread) measured CPU over ten seconds without input: 46.875 ms with the window open
 and 31.25 ms in the tray, or 0.468% and 0.3122% of one logical core. These
 samples are recorded as `normalIdleValidation` in the same JSON; they do not
 establish zero CPU use. This probe used the normal shortcut/tray services
@@ -100,13 +106,13 @@ worker, and rejected browser assets, raw fonts, CUDA, and missing runtime files.
 The installer was built but installation and uninstallation were not run.
 
 Release executable SHA-256:
-`4A1C90684BF95E5615C5BE1298986AFA90E7F4DE4722E9F423489A18E16303FF`.
+`C29D29AC3D490F210CFC15C42206C533A39EDAAE01EE9A718AB2D962591AA6DD`.
 Vulkan worker SHA-256:
 `939238541825C28A9DC23025C4D270D312CE29A104D55C3E99428BB10B13625F`.
 Portable ZIP SHA-256:
-`F1AEA13CEF1DEBBBFF5EC14150B60F3D29EE9F92EF803C1B6ECCDDF20B148E1B`.
+`BE019DF8CE35E1606AE049C123D50E9A05AB4D71E0FD6523197C798884A887EA`.
 Setup executable SHA-256:
-`F4EA8B336D3EE31215070B6E0DB365E726871C815688D6A84198D7168D84264E`.
+`80B97980E060C918A6D2ED144CFB9C7151A7CEC910CC0924B32FF772D0529DA0`.
 
 Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
 input and paste into another app, a real IME session, and macOS were not

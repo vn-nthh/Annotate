@@ -107,7 +107,7 @@ pub async fn run(
     let mut passed = vec![];
 
     check_overlay(cx).await?;
-    passed.push("The visible overlay is topmost, transparent, nonactivating, and a tool window; native hit tests and mouse activation reject interaction");
+    passed.push("The visible overlay is borderless, topmost, transparent, nonactivating, and a tool window; native hit tests and mouse activation reject interaction");
     passed.push("Queued overlay show, confirmation, and hide preserve the foreground window; hide removes the overlay");
 
     for (choice, expected) in [

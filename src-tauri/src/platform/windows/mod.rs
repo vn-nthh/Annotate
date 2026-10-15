@@ -110,8 +110,20 @@ pub fn check_overlay_window(
                 "The recording overlay has incorrect extended styles: {style:#x}"
             ));
         }
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        if style & WS_POPUP.0 as isize == 0 || style & (WS_CAPTION | WS_THICKFRAME).0 as isize != 0
+        {
+            return Err(format!(
+                "The recording overlay has a native frame: {style:#x}"
+            ));
+        }
         let mut rect = RECT::default();
         GetWindowRect(hwnd, &mut rect).map_err(|e| e.to_string())?;
+        let mut client = RECT::default();
+        GetClientRect(hwnd, &mut client).map_err(|e| e.to_string())?;
+        if rect.right - rect.left != client.right || rect.bottom - rect.top != client.bottom {
+            return Err("The recording overlay has borders outside its client area".into());
+        }
         let x = ((rect.left + rect.right) / 2) as u16 as isize;
         let y = ((rect.top + rect.bottom) / 2) as u16 as isize;
         let hit = SendMessageW(hwnd, WM_NCHITTEST, None, Some(LPARAM(x | (y << 16))));
