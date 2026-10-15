@@ -36,9 +36,9 @@ the most recent reference implementation of the same behavior.
    the Direct3D device alone is ~270 ms and ~48 MiB private on an AMD APU);
    the user accepted this in exchange for GPUI. Do not add cost beyond it.
    Current release numbers (`scripts/benchmark-native.ps1`, Ryzen 5 5600G):
-   ~523 ms from process creation to the first view render (before GPU
-   presentation), 59.33 MiB working set / 123.18 MiB private with the window
-   open, 59.26 / 76.63 MiB in the tray. Results are in
+   ~518 ms from process creation to the first view render (before GPU
+   presentation), 59.25 MiB working set / 125.45 MiB private with the window
+   open, 59.17 / 76.14 MiB in the tray. Results are in
    `docs/gpui-benchmark.json`; the Win32 baseline is in
    `docs/native-benchmark.json`.
 
