@@ -110,32 +110,6 @@ fn timestamp(value: Option<&Value>, fallback: u64) -> u64 {
     }
 }
 
-fn compare_terms(a: &str, b: &str) -> std::cmp::Ordering {
-    use windows::{
-        core::PCWSTR,
-        Win32::Globalization::{CompareStringEx, NORM_IGNORECASE, NORM_IGNORENONSPACE},
-    };
-    let a_utf16: Vec<_> = a.encode_utf16().collect();
-    let b_utf16: Vec<_> = b.encode_utf16().collect();
-    let result = unsafe {
-        CompareStringEx(
-            PCWSTR::null(),
-            NORM_IGNORECASE | NORM_IGNORENONSPACE,
-            &a_utf16,
-            &b_utf16,
-            None,
-            None,
-            None,
-        )
-    }
-    .0;
-    if result == 0 {
-        key(a).cmp(&key(b))
-    } else {
-        result.cmp(&2)
-    }
-}
-
 fn array<'a>(value: &'a Value, field: &str) -> &'a [Value] {
     value
         .get(field)
@@ -210,7 +184,7 @@ impl Dictionary {
         });
         let mut terms: Vec<_> = terms.into_values().collect();
         terms.sort_by(|a, b| {
-            compare_terms(&a.value, &b.value)
+            crate::platform::compare_terms(&a.value, &b.value)
                 .then_with(|| order[&key(&a.value)].cmp(&order[&key(&b.value)]))
         });
         Self {
@@ -249,7 +223,8 @@ impl Dictionary {
             value: value.into(),
             updated_at,
         });
-        self.terms.sort_by(|a, b| compare_terms(&a.value, &b.value));
+        self.terms
+            .sort_by(|a, b| crate::platform::compare_terms(&a.value, &b.value));
         "added"
     }
 

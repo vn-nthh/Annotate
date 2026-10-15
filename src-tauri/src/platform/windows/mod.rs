@@ -1,15 +1,25 @@
 //! Windows: Win32 shortcuts and tray, WASAPI audio, Shell dialogs, SendInput.
+mod audio;
+mod data;
 mod input;
 mod overlay;
 mod picker;
 mod services;
+mod worker;
 
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::path::PathBuf;
 use windows::Win32::Foundation::HWND;
 
+pub use audio::{enumerate_capture_devices, Capture};
+pub use data::{compare_terms, legacy_storage_paths, lock_legacy_storage};
 pub use input::{capture_selected_text, paste_text, sanitize_text_for_input, set_clipboard_text};
 pub use services::{acquire_instance, key_name, register as register_shortcut, Instance};
+#[cfg(test)]
+pub use worker::test_worker;
+pub use worker::{
+    configure_whisper_worker, hide_console, WorkerJob, FFMPEG_FILENAME, FFMPEG_SHA256, FFMPEG_URL,
+};
 
 pub fn local_data_dir() -> Result<PathBuf, String> {
     std::env::var_os("LOCALAPPDATA")
@@ -67,6 +77,64 @@ unsafe impl Send for DialogOwner {}
 
 pub fn dialog_owner(window: &impl HasWindowHandle) -> Option<DialogOwner> {
     hwnd(window).map(|hwnd| DialogOwner(hwnd.0 as isize))
+}
+
+/// An opaque foreground-window snapshot for the isolated overlay checks.
+pub fn overlay_check_foreground() -> DialogOwner {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    DialogOwner(unsafe { GetForegroundWindow() }.0 as isize)
+}
+
+/// Probes the actual overlay window. Call off the UI thread because native hit
+/// tests synchronously enter its window procedure.
+pub fn check_overlay_window(
+    owner: DialogOwner,
+    foreground: DialogOwner,
+    visible: bool,
+) -> Result<(), String> {
+    use windows::Win32::{
+        Foundation::{LPARAM, RECT, WPARAM},
+        UI::WindowsAndMessaging::*,
+    };
+    let hwnd = HWND(owner.0 as *mut _);
+    unsafe {
+        if IsWindowVisible(hwnd).as_bool() != visible {
+            return Err(format!(
+                "The recording overlay visibility was not {visible}"
+            ));
+        }
+        let required = WS_EX_TOPMOST | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+        let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if style & required.0 as isize != required.0 as isize {
+            return Err(format!(
+                "The recording overlay has incorrect extended styles: {style:#x}"
+            ));
+        }
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).map_err(|e| e.to_string())?;
+        let x = ((rect.left + rect.right) / 2) as u16 as isize;
+        let y = ((rect.top + rect.bottom) / 2) as u16 as isize;
+        let hit = SendMessageW(hwnd, WM_NCHITTEST, None, Some(LPARAM(x | (y << 16))));
+        if hit.0 != HTTRANSPARENT as isize {
+            return Err(format!("The recording overlay hit test returned {}", hit.0));
+        }
+        let activate = SendMessageW(
+            hwnd,
+            WM_MOUSEACTIVATE,
+            Some(WPARAM(owner.0 as usize)),
+            Some(LPARAM((HTCLIENT | (WM_LBUTTONDOWN << 16)) as isize)),
+        );
+        if activate.0 != MA_NOACTIVATE as isize {
+            return Err(format!(
+                "The recording overlay mouse activation returned {}",
+                activate.0
+            ));
+        }
+        if GetForegroundWindow().0 as isize != foreground.0 {
+            return Err("The recording overlay changed the foreground window".into());
+        }
+    }
+    Ok(())
 }
 
 /// Shows the media file picker. Blocks; call off the UI thread.
@@ -320,6 +388,19 @@ pub fn set_capture_dpi(
     Ok(())
 }
 
+/// Posts an operating-system close request (UI interaction checks).
+pub fn post_close(window: &impl HasWindowHandle) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
+    };
+    if let Some(hwnd) = hwnd(window) {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+}
+
 /// Posts a left click at a logical client position (UI interaction checks).
 pub fn post_click(window: &impl HasWindowHandle, x: f32, y: f32) {
     use windows::Win32::{
@@ -380,6 +461,29 @@ pub fn post_key_up(window: &impl HasWindowHandle, key: &str) {
     if let Some(hwnd) = hwnd(window) {
         unsafe {
             let _ = PostMessageW(Some(hwnd), WM_KEYUP, WPARAM(key), LPARAM(0xc0000001));
+        }
+    }
+}
+
+/// Drags from one logical client position to another (UI interaction checks).
+pub fn post_drag(window: &impl HasWindowHandle, from: (f32, f32), to: (f32, f32)) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    };
+    if let Some(hwnd) = hwnd(window) {
+        let scale = unsafe { GetDpiForWindow(hwnd) }.max(96) as f32 / 96.;
+        for (message, buttons, (x, y)) in [
+            (WM_MOUSEMOVE, 0, from),
+            (WM_LBUTTONDOWN, 1, from),
+            (WM_MOUSEMOVE, 1, to),
+            (WM_LBUTTONUP, 0, to),
+        ] {
+            let (x, y) = ((x * scale) as isize, (y * scale) as isize);
+            let position = LPARAM((x & 0xffff) | ((y & 0xffff) << 16));
+            unsafe {
+                let _ = PostMessageW(Some(hwnd), message, WPARAM(buttons), position);
+            }
         }
     }
 }

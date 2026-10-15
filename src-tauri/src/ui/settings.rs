@@ -501,9 +501,9 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let t = self.theme;
-        let s = self.state.clone();
-        let mode = s.mode();
         let scroll = self.scroll_handle("settings");
+        let s = &self.state;
+        let mode = s.mode();
         let mut mics: Vec<(String, String)> = s
             .mics
             .iter()

@@ -100,17 +100,18 @@ impl MainWindow {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        if !self.state.entries.is_empty() {
+            return self.subtitle_result(cx).into_any_element();
+        }
         let t = self.theme;
-        let s = self.state.clone();
+        let scroll = self.scroll_handle("subtitling");
+        let s = &self.state;
         let description = div()
             .mb(px(16.))
             .text_size(rem(0.82))
             .line_height(rem(0.82 * 1.5))
             .text_color(t.light)
             .child("Generate SRT subtitles from any audio or video file using VAD + Whisper.");
-        if !s.entries.is_empty() {
-            return self.subtitle_result(&s, cx).into_any_element();
-        }
         let busy = s.busy.contains("sub-generate-btn");
         let locked = busy || s.busy.contains("sub-summarize-btn");
         let deps_ready = s.ready.contains("ffmpeg") && s.ready.contains("vad");
@@ -123,7 +124,6 @@ impl MainWindow {
                 .to_owned()
         });
         let has_file = file_name.is_some();
-        let scroll = self.scroll_handle("subtitling");
         let zone = ui::focusable(
             div()
                 .id("sub-file-zone")
@@ -250,8 +250,11 @@ impl MainWindow {
             .into_any_element()
     }
 
-    fn subtitle_result(&mut self, s: &crate::native_core::State, cx: &mut Context<Self>) -> Div {
+    fn subtitle_result(&mut self, cx: &mut Context<Self>) -> Div {
         let t = self.theme;
+        let scroll = self.scroll_handle("preview");
+        let page = self.scroll_handle("subtitling");
+        let s = &self.state;
         let title = s
             .file
             .as_deref()
@@ -264,8 +267,6 @@ impl MainWindow {
         let key_missing = s.label("openrouter-key-input", "").is_empty();
         let locked = s.busy.contains("sub-generate-btn") || busy;
         let copied = self.copied("sub-summary-copy-btn");
-        let scroll = self.scroll_handle("preview");
-        let page = self.scroll_handle("subtitling");
         // The page scrolls when a long summary pushes the actions down; the
         // preview fills the remaining height and scrolls on its own.
         let column = panel()

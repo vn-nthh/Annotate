@@ -72,6 +72,14 @@ pub struct MainWindow {
     pub(super) modal_focus: [FocusHandle; 3],
 }
 
+fn should_close(window: &mut Window, cx: &mut App) -> bool {
+    // The callback already holds the window; only lease its root view.
+    if let Some(Some(view)) = window.root::<MainWindow>() {
+        view.update(cx, |view, cx| view.open_modal(window, cx));
+    }
+    false
+}
+
 /// Opens an unfocused window at `origin` for reference captures.
 pub fn open_at(
     cx: &mut App,
@@ -94,6 +102,7 @@ pub fn open_at(
     let handle = cx
         .open_window(options, |window, cx| {
             crate::platform::move_offscreen(window);
+            window.on_window_should_close(cx, should_close);
             cx.new(|cx| MainWindow::new(window, cx))
         })
         .ok()?;
@@ -136,12 +145,7 @@ pub fn open(cx: &mut App, settings: bool) {
     };
     let opened = cx.open_window(options, |window, cx| {
         crate::platform::style_main_window(window);
-        window.on_window_should_close(cx, |window, cx| {
-            if let Some(handle) = window.window_handle().downcast::<MainWindow>() {
-                let _ = handle.update(cx, |view, window, cx| view.open_modal(window, cx));
-            }
-            false
-        });
+        window.on_window_should_close(cx, should_close);
         cx.new(|cx| MainWindow::new(window, cx))
     });
     match opened {
@@ -1465,6 +1469,7 @@ impl MainWindow {
         let t = self.theme;
         let focused = input.read(cx).focus_handle(cx);
         let input_id = self.input_id(input);
+        let pointer_input = input.clone();
         div()
             .id(SharedString::from(format!("field-{input_id}")))
             .relative()
@@ -1481,9 +1486,11 @@ impl MainWindow {
             .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
             .when(focused.is_focused(window), move |f| f.border_color(t.faint))
             .cursor(gpui::CursorStyle::IBeam)
-            .on_mouse_down(MouseButton::Left, move |_, window, _| {
-                window.focus(&focused);
-                window.prevent_default();
+            .on_mouse_down(MouseButton::Left, move |event, window, cx| {
+                if !window.default_prevented() {
+                    pointer_input.update(cx, |input, cx| input.on_mouse_down(event, window, cx));
+                    window.prevent_default();
+                }
             })
             .text_size(rem(0.9))
             .line_height(px(15.))

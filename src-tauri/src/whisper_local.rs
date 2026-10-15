@@ -59,48 +59,7 @@ struct WorkerProcess {
     stdin: ChildStdin,
     stdout_reader: BufReader<ChildStdout>,
     backend: AccelerationBackend,
-    #[cfg(windows)]
-    _job: WorkerJob,
-}
-
-/// The OS closes this handle on app exit, including crashes and active inference.
-#[cfg(windows)]
-struct WorkerJob(usize);
-
-#[cfg(windows)]
-impl WorkerJob {
-    fn attach(child: &Child) -> Result<Self, String> {
-        use windows::Win32::{Foundation::HANDLE, System::JobObjects::*};
-        unsafe {
-            let handle = CreateJobObjectW(None, None).map_err(|e| e.to_string())?;
-            let job = Self(handle.0 as usize);
-            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const _,
-                std::mem::size_of_val(&limits) as u32,
-            )
-            .map_err(|e| format!("Could not protect the Whisper worker: {e}"))?;
-            let process = child.raw_handle().ok_or("Whisper worker already exited")?;
-            AssignProcessToJobObject(handle, HANDLE(process)).map_err(|e| {
-                format!("Could not assign the Whisper worker to its process job: {e}")
-            })?;
-            Ok(job)
-        }
-    }
-}
-
-#[cfg(windows)]
-impl Drop for WorkerJob {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(
-                self.0 as *mut _,
-            ));
-        }
-    }
+    _job: crate::platform::WorkerJob,
 }
 
 static WORKER: LazyLock<Mutex<Option<WorkerProcess>>> = LazyLock::new(|| Mutex::new(None));
@@ -210,11 +169,7 @@ fn worker_exe_path(backend: AccelerationBackend) -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     let dir = exe.parent().unwrap_or(std::path::Path::new("."));
     let stem = backend.worker_bin_stem();
-    let name = if cfg!(windows) {
-        format!("{stem}.exe")
-    } else {
-        stem.to_string()
-    };
+    let name = format!("{stem}{}", std::env::consts::EXE_SUFFIX);
     dir.join(name)
 }
 
@@ -287,9 +242,7 @@ pub async fn ensure_loaded(
         .stderr(std::process::Stdio::inherit())
         .kill_on_drop(true);
 
-    // CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS keeps loading below UI work.
-    #[cfg(windows)]
-    cmd.creation_flags(0x0800_0000 | 0x0000_4000);
+    crate::platform::configure_whisper_worker(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         format!(
@@ -299,8 +252,7 @@ pub async fn ensure_loaded(
         )
     })?;
 
-    #[cfg(windows)]
-    let job = WorkerJob::attach(&child)?;
+    let job = crate::platform::WorkerJob::attach(&child)?;
 
     let stdin = child.stdin.take().ok_or("No stdin for worker")?;
     let stdout = child.stdout.take().ok_or("No stdout for worker")?;
@@ -311,7 +263,6 @@ pub async fn ensure_loaded(
         stdin,
         stdout_reader,
         backend,
-        #[cfg(windows)]
         _job: job,
     };
 
@@ -531,33 +482,6 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn closing_the_worker_job_terminates_a_busy_child() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            let mut child = tokio::process::Command::new("ping.exe")
-                .args(["-n", "60", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(0x0800_0000)
-                .spawn()
-                .unwrap();
-            let job = super::WorkerJob::attach(&child).unwrap();
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            assert!(child.try_wait().unwrap().is_none());
-            drop(job);
-            tokio::time::timeout(std::time::Duration::from_secs(2), child.wait())
-                .await
-                .expect("worker survived its job")
-                .unwrap();
-        });
-    }
-
-    #[cfg(windows)]
     #[test]
     fn a_crashed_worker_clears_the_loaded_status() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -565,16 +489,8 @@ mod tests {
             .build()
             .unwrap();
         runtime.block_on(async {
-            let mut child = tokio::process::Command::new("ping.exe")
-                .args(["-n", "60", "127.0.0.1"])
-                .stdin(std::process::Stdio::piped())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true)
-                .creation_flags(0x0800_0000)
-                .spawn()
-                .unwrap();
-            let job = super::WorkerJob::attach(&child).unwrap();
+            let mut child = crate::platform::test_worker();
+            let job = crate::platform::WorkerJob::attach(&child).unwrap();
             let stdin = child.stdin.take().unwrap();
             let stdout_reader = tokio::io::BufReader::new(child.stdout.take().unwrap());
             child.kill().await.unwrap();

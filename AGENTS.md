@@ -17,10 +17,12 @@ shared with a macOS port. Windows is the only implemented platform today.
   text field, controls) and the reference-capture mode.
 - `src/platform/windows/`: global shortcuts and keyboard hook, tray icon,
   single instance, clipboard and synthetic paste/copy, file dialogs, and the
-  overlay's click-through window styles.
+  overlay's click-through window styles, WASAPI capture, locale collation,
+  legacy profile access, and child-process lifetime.
 - `src/native_core.rs`: app state and actions; `native_data`, `native_sync`,
   `native_migrate`, `native_onboarding`: storage, Drive sync, Tauri data import,
   setup-guide state. These are UI-independent.
+- `src/native_audio.rs`: portable PCM level, speech detection, and WAV encoding.
 
 The legacy Tauri app is the behavioral baseline; the Win32 app (tag v0.3.0) is
 the most recent reference implementation of the same behavior.
@@ -34,9 +36,9 @@ the most recent reference implementation of the same behavior.
    the Direct3D device alone is ~270 ms and ~48 MiB private on an AMD APU);
    the user accepted this in exchange for GPUI. Do not add cost beyond it.
    Current release numbers (`scripts/benchmark-native.ps1`, Ryzen 5 5600G):
-   ~526 ms from process creation to the first view render (before GPU
-   presentation), 59.33 MiB working set / 123.61 MiB private with the window
-   open, 59.30 / 76.41 MiB in the tray. Results are in
+   ~503 ms from process creation to the first view render (before GPU
+   presentation), 59.59 MiB working set / 124.83 MiB private with the window
+   open, 59.28 / 77.87 MiB in the tray. Results are in
    `docs/gpui-benchmark.json`; the Win32 baseline is in
    `docs/native-benchmark.json`.
 

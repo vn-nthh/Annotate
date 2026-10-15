@@ -71,6 +71,17 @@ pub struct Overlay {
 struct OverlayWindow(WindowHandle<Overlay>);
 impl Global for OverlayWindow {}
 
+pub(super) fn check_owner(cx: &mut App) -> Result<crate::platform::DialogOwner, String> {
+    let handle = cx
+        .try_global::<OverlayWindow>()
+        .map(|window| window.0)
+        .ok_or("The recording overlay was not created")?;
+    handle
+        .update(cx, |_, window, _| crate::platform::dialog_owner(window))
+        .map_err(|e| e.to_string())?
+        .ok_or("The recording overlay has no native window handle".into())
+}
+
 pub fn install(cx: &mut App) {
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(

@@ -101,7 +101,7 @@ impl RecordingConfig {
     }
 }
 struct Session {
-    capture: native_audio::Capture,
+    capture: crate::platform::Capture,
     config: RecordingConfig,
 }
 #[derive(Default)]
@@ -1000,7 +1000,7 @@ impl Core {
                 });
             }
             let capture =
-                native_audio::Capture::start_with_error(config.device.clone(), move |error| {
+                crate::platform::Capture::start_with_error(config.device.clone(), move |error| {
                     get().capture_failed(generation, error)
                 });
             recording.session = Some(Session { capture, config });

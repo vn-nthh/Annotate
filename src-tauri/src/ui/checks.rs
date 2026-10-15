@@ -70,12 +70,45 @@ fn ensure(ok: bool, failure: &str) -> Result<(), String> {
     ok.then_some(()).ok_or_else(|| failure.to_owned())
 }
 
+async fn check_overlay(cx: &mut AsyncApp) -> Result<(), String> {
+    let owner = cx
+        .update(super::overlay::check_owner)
+        .map_err(|e| e.to_string())??;
+    let foreground = crate::platform::overlay_check_foreground();
+    let verify = |visible| {
+        crate::app::spawn_blocking(move || {
+            crate::platform::check_overlay_window(owner, foreground, visible)
+        })
+    };
+    let shown = async {
+        verify(false).await.map_err(|e| e.to_string())??;
+        super::overlay::show_listening()?;
+        settle(cx).await;
+        verify(true).await.map_err(|e| e.to_string())??;
+        super::overlay::show_confirmation("added", "Overlay check".into())?;
+        settle(cx).await;
+        verify(true).await.map_err(|e| e.to_string())??;
+        Ok::<(), String>(())
+    }
+    .await;
+    // Always hide after showing, including when a native assertion fails.
+    super::overlay::hide()?;
+    settle(cx).await;
+    let hidden = verify(false).await.map_err(|e| e.to_string())?;
+    shown?;
+    hidden
+}
+
 pub async fn run(
     handle: Handle,
     long_summary: State,
     cx: &mut AsyncApp,
 ) -> Result<Vec<&'static str>, String> {
     let mut passed = vec![];
+
+    check_overlay(cx).await?;
+    passed.push("The visible overlay is topmost, transparent, nonactivating, and a tool window; native hit tests and mouse activation reject interaction");
+    passed.push("Queued overlay show, confirmation, and hide preserve the foreground window; hide removes the overlay");
 
     for (choice, expected) in [
         ("webspeech", "groq"),
@@ -133,6 +166,22 @@ pub async fn run(
         "Escape left the close prompt open",
     )?;
     passed.push("Escape closes the close prompt");
+
+    view(handle, cx, |_, window, _| {
+        crate::platform::post_close(window)
+    })?;
+    settle(cx).await;
+    ensure(
+        view(handle, cx, |view, window, _| {
+            view.modal && view.modal_focus[0].is_focused(window)
+        })?,
+        "A native close request did not open the close prompt with its first action focused",
+    )?;
+    key(handle, cx, "escape")?;
+    settle(cx).await;
+    passed.push(
+        "Windows close requests open the close prompt, including the Alt+F4 and taskbar Close path",
+    );
 
     for activation in ["enter", "space"] {
         click(handle, cx, 496., 24.)?;
@@ -250,6 +299,72 @@ pub async fn run(
     )?;
     get().action("dict-remove", "zeta".into());
     passed.push("Clicking field padding focuses the dictionary editor; Enter adds the typed term");
+
+    view(handle, cx, |view, _, cx| {
+        view.inputs
+            .dict
+            .update(cx, |input, cx| input.set_text("abcdef", cx));
+    })?;
+    settle(cx).await;
+    click(handle, cx, 98., 166.)?;
+    settle(cx).await;
+    key(handle, cx, "z home")?;
+    settle(cx).await;
+    click(handle, cx, 410., 151.)?;
+    settle(cx).await;
+    key(handle, cx, "q")?;
+    settle(cx).await;
+    ensure(
+        view(handle, cx, |view, _, cx| {
+            view.inputs.dict.read(cx).text() == "zabcdefq"
+        })?,
+        "Clicks in the field padding did not place the caret at the nearest text position",
+    )?;
+    view(handle, cx, |_, window, _| {
+        crate::platform::post_drag(window, (106., 166.), (510., 166.));
+    })?;
+    settle(cx).await;
+    key(handle, cx, "r")?;
+    settle(cx).await;
+    ensure(
+        view(handle, cx, |view, _, cx| {
+            view.inputs.dict.read(cx).text() == "r"
+        })?,
+        "Dragging past the field boundary did not select its text",
+    )?;
+    view(handle, cx, |view, _, cx| {
+        view.inputs
+            .dict
+            .update(cx, |input, cx| input.set_text("", cx));
+    })?;
+    passed
+        .push("Padding clicks place the caret and text selection follows drags outside the field");
+
+    let composition = view(handle, cx, |view, window, cx| {
+        view.inputs.dict.update(cx, |input, cx| {
+            input.set_text("A😊Z", cx);
+            input.replace_and_mark_text_in_range(Some(1..3), "e\u{301}日", Some(2..3), window, cx);
+            let first = input.text() == "Ae\u{301}日Z"
+                && input.marked_text_range(window, cx) == Some(1..4)
+                && input.selected_text_range(false, window, cx).unwrap().range == (3..4);
+            input.replace_and_mark_text_in_range(None, "é😊", Some(1..3), window, cx);
+            let updated = input.text() == "Aé😊Z"
+                && input.selected_text_range(false, window, cx).unwrap().range == (2..4);
+            input.replace_text_in_range(None, "你😊", window, cx);
+            let committed = input.text() == "A你😊Z"
+                && input.marked_text_range(window, cx).is_none()
+                && input.selected_text_range(false, window, cx).unwrap().range == (4..4);
+            input.replace_text_in_range(Some(2..4), "é", window, cx);
+            let replaced = input.text() == "A你éZ";
+            input.set_text("", cx);
+            first && updated && committed && replaced
+        })
+    })?;
+    ensure(
+        composition,
+        "IME composition or UTF-16 replacement corrupted Unicode text or selection",
+    )?;
+    passed.push("The live text input handler composes and commits combining marks, CJK, and surrogate pairs with UTF-16 selections");
 
     get().action("mode-select", "azure-mai".into());
     reset(handle, cx, "settings").await?;

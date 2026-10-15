@@ -1,5 +1,4 @@
 mod app;
-mod audio;
 mod download;
 mod gec;
 mod google_auth;
@@ -19,7 +18,7 @@ mod vad;
 mod whisper_local;
 
 use app::AppHandle;
-use audio::enumerate_capture_devices;
+use platform::enumerate_capture_devices;
 use serde::Serialize;
 use std::time::Instant;
 

@@ -19,16 +19,10 @@ use std::path::{Path, PathBuf};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use crate::platform::{FFMPEG_FILENAME, FFMPEG_SHA256, FFMPEG_URL};
 use crate::vad;
 
 // ── Constants ──────────────────────────────────────────
-
-/// FFmpeg binary filename
-const FFMPEG_FILENAME: &str = "ffmpeg.exe";
-
-/// FFmpeg download URL (gyan.dev essentials build — Windows x64, ~80 MB zip)
-const FFMPEG_URL: &str = "https://pub-e97b79d01db7403587a869136310a65d.r2.dev/ffmpeg/ffmpeg.exe";
-const FFMPEG_SHA256: &str = "1a65d5b0b10d8d9a81d2824a3538046a40ed3607c906b335a166add87613f705";
 
 // SRT formatting constants
 const MAX_CHARS_PER_LINE: usize = 42;
@@ -143,8 +137,7 @@ pub async fn extract_audio(input_path: &str, data_dir: &Path) -> Result<PathBuf,
         output_path.to_str().ok_or("Invalid temp path")?,
     ]);
 
-    #[cfg(windows)]
-    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    crate::platform::hide_console(&mut cmd);
 
     let output = cmd
         .output()

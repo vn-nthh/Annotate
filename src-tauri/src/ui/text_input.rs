@@ -198,7 +198,7 @@ impl TextInput {
         self.replace_text_in_range(None, "", window, cx)
     }
 
-    fn on_mouse_down(
+    pub(super) fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
@@ -273,12 +273,6 @@ impl TextInput {
         else {
             return 0;
         };
-        if position.y < bounds.top() {
-            return 0;
-        }
-        if position.y > bounds.bottom() {
-            return self.content.len();
-        }
         self.from_display(line.closest_index_for_x(position.x - bounds.left() + self.scroll_x))
     }
 
@@ -687,6 +681,12 @@ impl Element for TextElement {
         window: &mut Window,
         cx: &mut App,
     ) {
+        let input = self.input.downgrade();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase == gpui::DispatchPhase::Bubble {
+                let _ = input.update(cx, |input, cx| input.on_mouse_move(event, window, cx));
+            }
+        });
         let (focus_handle, scroll_x) = {
             let input = self.input.read(cx);
             (input.focus_handle.clone(), input.scroll_x)
@@ -743,7 +743,6 @@ impl Render for TextInput {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
-            .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(TextElement {
                 input: cx.entity(),
                 theme,
