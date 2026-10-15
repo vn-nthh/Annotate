@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde::Deserialize;
 
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const OPENROUTER_MODEL: &str = "openai/gpt-5.4-mini";
+const OPENROUTER_MODEL: &str = "openai/gpt-6-luna";
 const OPENROUTER_TITLE: &str = "Annotate";
 
 const SUMMARY_SYSTEM_PROMPT: &str = "You summarize subtitle transcripts for a desktop transcription app. Be concise, accurate, and faithful to the transcript. Ignore timestamps, filler words, and repeated phrases. Preserve names, numbers, decisions, action items, and key topics. Return valid JSON with a single `summary` string. Use the same language as the transcript when possible.";

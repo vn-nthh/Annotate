@@ -607,7 +607,7 @@ impl MainWindow {
                         cx,
                     ))
                     .child(ui::hint(
-                        "Optional. Used only to summarize subtitles with GPT-5.4 Mini.",
+                        "Optional. Used only to summarize subtitles with GPT-6 Luna.",
                         &t,
                     )),
             )

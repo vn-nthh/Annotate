@@ -387,7 +387,7 @@ fn save_srt_file(entries: Vec<subtitle::SrtEntry>, output_path: String) -> Resul
         .map_err(|e| format!("Failed to write SRT file: {}", e))
 }
 
-/// Summarize subtitle entries with OpenRouter GPT-5.4 Mini.
+/// Summarize subtitle entries with OpenRouter GPT-6 Luna.
 async fn summarize_subtitles(entries: Vec<subtitle::SrtEntry>) -> Result<String, String> {
     let api_key = load_openrouter_api_key()?
         .ok_or_else(|| "OpenRouter API key not configured. Add it in Settings.".to_string())?;
