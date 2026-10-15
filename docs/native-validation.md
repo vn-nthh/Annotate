@@ -22,8 +22,9 @@ permissions, model backend, and packaging.
   `WM_DPICHANGED` on the capture window, checking 520 x 580 logical and
   780 x 870 physical pixels before restoring the original scale. This does
   not test dragging between real monitors or changing desktop settings.
-- All 27 harness checks pass. They cover engine migration, titlebar and native
-  Windows close requests (the Alt+F4/taskbar Close path),
+- All 28 harness checks pass. They cover engine migration, titlebar and native
+  Windows close requests (the Alt+F4/taskbar Close path), titlebar mouse-down
+  preserving the native drag action,
   modal focus trapping and keyboard activation, dropdown keys, wheel input,
   shortcut cancellation and key release, field padding hit testing, real
   dictionary typing, edits saved on blur, setup gating/resume/completion,
@@ -55,6 +56,12 @@ permissions, model backend, and packaging.
   its queued window message; showing and confirming remain nonactivating.
   A native full-window capture shows only the pill and its dots. Windows reports
   no non-client rendering, with both outer and client bounds at 260 x 32 pixels.
+- Automatic focus handling belongs to the content area, leaving the custom
+  titlebar outside it. A titlebar mouse-down must preserve the native default
+  action so Windows can move the window; controls and keyboard focus remain
+  handled by GPUI. A real held-button drag of the running release moved the
+  window by the expected 80 x 40 physical pixels; its original position and
+  the pointer were restored afterward.
 
 Regenerate the screenshots outside the checkout:
 
@@ -71,6 +78,8 @@ warmup on a Ryzen 5 5600G. Median process creation to first view render was
 536 ms (509 ms from the app's own timing origin). The GPUI timing hook runs
 at entry into the first render, before GPU presentation; it is not a measure
 of a completed frame on the display. The benchmark metadata states this.
+This benchmark predates the titlebar focus fix; its measured executable hash
+is retained in the JSON.
 
 Median open-window working set was 61.71 MiB, with 123.21 MiB private bytes.
 In the tray it was 61.19 MiB / 76.47 MiB, with one process in both phases.
@@ -101,18 +110,20 @@ worker exited with code 0.
 
 `scripts/package-native.ps1 -SkipBuild` built the portable ZIP and NSIS setup.
 `scripts/test-native-package.ps1` then extracted the ZIP outside the checkout,
-rendered all 88 images, passed all 27 checks, verified the isolated Vulkan
+rendered all 88 images, passed all 28 checks, verified the isolated Vulkan
 worker, and rejected browser assets, raw fonts, CUDA, and missing runtime files.
+ZIP creation was retried after a transient worker-file sharing violation;
+the final archive passed the extraction and worker checks.
 The installer was built but installation and uninstallation were not run.
 
 Release executable SHA-256:
-`C29D29AC3D490F210CFC15C42206C533A39EDAAE01EE9A718AB2D962591AA6DD`.
+`DFFA613590B3EFE658256FB3770EF05D1F97CD7E4B5EAD23AE70DA45AED85045`.
 Vulkan worker SHA-256:
 `939238541825C28A9DC23025C4D270D312CE29A104D55C3E99428BB10B13625F`.
 Portable ZIP SHA-256:
-`BE019DF8CE35E1606AE049C123D50E9A05AB4D71E0FD6523197C798884A887EA`.
+`F7E7B54C2CCCA49B8D983E8BF151223FA472DA8D8B1C00B922246A9C09E3471F`.
 Setup executable SHA-256:
-`80B97980E060C918A6D2ED144CFB9C7151A7CEC910CC0924B32FF772D0529DA0`.
+`C0419F4F0DFBF23B951CF2660F8AC244BD360857D101FE11FE177E6BBF0D94A1`.
 
 Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
 input and paste into another app, a real IME session, and macOS were not

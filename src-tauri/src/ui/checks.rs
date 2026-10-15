@@ -130,6 +130,23 @@ pub async fn run(
     passed.push("Only Groq, Azure MAI, and local Vulkan are selectable");
 
     reset(handle, cx, "home").await?;
+    view(handle, cx, |_, window, _| {
+        crate::platform::post_mouse_button(window, 200., 24., true);
+    })?;
+    settle(cx).await;
+    let native_drag = view(handle, cx, |_, window, _| !window.default_prevented())?;
+    view(handle, cx, |_, window, _| {
+        crate::platform::post_mouse_button(window, 200., 24., false);
+    })?;
+    settle(cx).await;
+    ensure(
+        native_drag,
+        "The titlebar mouse-down blocked the native window drag",
+    )?;
+    passed.push(
+        "The titlebar leaves mouse-down's native default action available for window dragging",
+    );
+
     click(handle, cx, 496., 24.)?;
     settle(cx).await;
     ensure(

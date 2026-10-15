@@ -415,6 +415,12 @@ pub fn post_close(window: &impl HasWindowHandle) {
 
 /// Posts a left click at a logical client position (UI interaction checks).
 pub fn post_click(window: &impl HasWindowHandle, x: f32, y: f32) {
+    post_mouse_button(window, x, y, true);
+    post_mouse_button(window, x, y, false);
+}
+
+/// Presses or releases the left mouse button (UI interaction checks).
+pub fn post_mouse_button(window: &impl HasWindowHandle, x: f32, y: f32, down: bool) {
     use windows::Win32::{
         Foundation::{LPARAM, WPARAM},
         UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
@@ -425,8 +431,8 @@ pub fn post_click(window: &impl HasWindowHandle, x: f32, y: f32) {
             let (x, y) = ((x * scale) as isize, (y * scale) as isize);
             let point = LPARAM((x & 0xffff) | ((y & 0xffff) << 16));
             let _ = PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(0), point);
-            let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(1), point);
-            let _ = PostMessageW(Some(hwnd), WM_LBUTTONUP, WPARAM(0), point);
+            let message = if down { WM_LBUTTONDOWN } else { WM_LBUTTONUP };
+            let _ = PostMessageW(Some(hwnd), message, WPARAM(usize::from(down)), point);
         }
     }
 }

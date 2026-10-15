@@ -1635,10 +1635,12 @@ impl Render for MainWindow {
                 .child(self.sidebar(cx))
                 .child(self.content(window, cx))
         };
+        // Focusing a GPUI element consumes mouse-down's native default action.
+        // Keep that handler off the titlebar so Windows can start a drag.
+        let body = body.track_focus(&self.root_focus);
         div()
             .id("root")
             .key_context("Annotate")
-            .track_focus(&self.root_focus)
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
