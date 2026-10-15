@@ -1,13 +1,11 @@
-//! Native lifecycle, tray, global shortcuts, settings, and async runtime.
-use serde_json::Value;
+//! Global shortcuts, the tray icon, and single-instance activation.
+//!
+//! These run on one hidden message-only thread so a low-level keyboard hook and
+//! `RegisterHotKey` keep working while GPUI owns the main thread's message loop.
 use sha2::Digest;
-use std::{
-    collections::BTreeMap,
-    path::PathBuf,
-    sync::{
-        atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
-        Arc, Mutex, OnceLock,
-    },
+use std::sync::{
+    atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering},
+    mpsc, Arc, Mutex, OnceLock,
 };
 use windows::{
     core::{w, HSTRING},
@@ -18,155 +16,99 @@ use windows::{
     },
 };
 
-static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-static SETTINGS: OnceLock<Arc<Settings>> = OnceLock::new();
 static THREAD: AtomicU32 = AtomicU32::new(0);
 static CLIPBOARD_OWNER: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static SERVICE_THREAD: OnceLock<Mutex<Option<std::thread::JoinHandle<()>>>> = OnceLock::new();
 const REGISTER: u32 = WM_APP + 61;
 const TRAY: u32 = WM_APP + 62;
 const QUIT: u32 = WM_APP + 63;
 const RELEASE: u32 = WM_APP + 64;
+const CLASS: windows::core::PCWSTR = w!("AnnotateNativeRuntime");
+
 pub fn clipboard_owner() -> Option<HWND> {
     let owner = CLIPBOARD_OWNER.load(Ordering::Acquire);
     (owner != 0).then_some(HWND(owner as *mut core::ffi::c_void))
 }
-pub fn initialize_runtime() -> Result<(), String> {
-    RUNTIME
-        .set(
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())?,
-        )
-        .map_err(|_| "Runtime already initialized".into())
-}
-pub fn spawn<F: std::future::Future + Send + 'static>(
-    future: F,
-) -> tokio::task::JoinHandle<F::Output>
-where
-    F::Output: Send + 'static,
-{
-    RUNTIME.get().unwrap().spawn(future)
-}
-pub fn spawn_blocking<F: FnOnce() -> R + Send + 'static, R: Send + 'static>(
-    f: F,
-) -> tokio::task::JoinHandle<R> {
-    RUNTIME.get().unwrap().spawn_blocking(f)
+
+/// Holds the per-profile mutex for the life of the process.
+pub struct Instance {
+    _mutex: Handle,
+    title: HSTRING,
 }
 
-#[derive(Clone)]
-pub struct AppHandle;
-impl AppHandle {
-    pub fn path(&self) -> &Self {
-        self
-    }
-    pub fn app_local_data_dir(&self) -> Result<PathBuf, String> {
-        std::env::var_os("ANNOTATE_DATA_DIR")
-            .or_else(|| {
-                std::env::var_os("LOCALAPPDATA")
-                    .map(|p| PathBuf::from(p).join("com.annotate.app").into_os_string())
-            })
-            .map(PathBuf::from)
-            .ok_or("LOCALAPPDATA is not available".into())
-    }
-    pub fn store(&self, _name: &str) -> Result<Arc<Settings>, String> {
-        if let Some(settings) = SETTINGS.get() {
-            return Ok(settings.clone());
+/// Returns `None` after handing activation to an instance that is already running.
+pub fn acquire_instance(directory: &std::path::Path) -> Result<Option<Instance>, String> {
+    let hash = sha2::Sha256::digest(instance_identity(directory).as_bytes());
+    let name = HSTRING::from(format!("Local\\AnnotateNative-{hash:x}"));
+    let title = HSTRING::from(format!("Annotate runtime {hash:x}"));
+    unsafe {
+        let mutex = CreateMutexW(None, false, &name).map_err(|e| e.to_string())?;
+        let duplicate = GetLastError() == ERROR_ALREADY_EXISTS;
+        let mutex = Handle(mutex);
+        if !duplicate {
+            return Ok(Some(Instance {
+                _mutex: mutex,
+                title,
+            }));
         }
-        let directory = std::env::var_os("ANNOTATE_DATA_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("APPDATA").map(|p| PathBuf::from(p).join("com.annotate.app"))
-            })
-            .ok_or("APPDATA is not available")?;
-        let path = directory.join("settings.json");
-        let data = match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|e| format!("Cannot read settings; original file preserved: {e}"))?,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
-            Err(e) => return Err(e.to_string()),
-        };
-        let settings = Arc::new(Settings {
-            path,
-            data: Mutex::new(data),
-        });
-        let _ = SETTINGS.set(settings);
-        Ok(SETTINGS.get().unwrap().clone())
-    }
-    pub fn emit<T: serde::Serialize>(&self, event: &str, payload: T) -> Result<(), String> {
-        let value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
-        if event == "subtitle-progress" {
-            let total = value["total"].as_f64().unwrap_or(1.0).max(1.0);
-            crate::native_core::get().change(|s| {
-                s.progress.insert(
-                    "sub".into(),
-                    (
-                        (value["current"].as_f64().unwrap_or(0.0) / total) as f32,
-                        value["message"].as_str().unwrap_or("Working...").into(),
-                    ),
-                );
-            });
-        } else if let Some(key) = event.strip_suffix("-download-progress") {
-            let current = value[0].as_f64().unwrap_or(0.0);
-            let total = value[1].as_f64().unwrap_or(1.0).max(1.0);
-            crate::native_core::get().change(|s| {
-                s.progress.insert(
-                    key.into(),
-                    (
-                        (current / total) as f32,
-                        format!("{:.0}%", current / total * 100.0),
-                    ),
-                );
-            });
-        }
-        Ok(())
-    }
-    pub fn exit(&self, _code: i32) {
-        unsafe {
-            let thread = THREAD.load(Ordering::Acquire);
-            if thread != 0 {
-                let _ = PostThreadMessageW(thread, QUIT, WPARAM(0), LPARAM(0));
+        // The primary process may still be between creating its mutex and HWND.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Ok(existing) = FindWindowW(CLASS, &title) {
+                let mut process = 0;
+                GetWindowThreadProcessId(existing, Some(&mut process));
+                let _ = AllowSetForegroundWindow(process);
+                if SendMessageTimeoutW(
+                    existing,
+                    WM_COPYDATA,
+                    WPARAM(0),
+                    LPARAM(0),
+                    SMTO_ABORTIFHUNG,
+                    1000,
+                    None,
+                )
+                .0 != 0
+                {
+                    return Ok(None);
+                }
+                return Err("The running Annotate instance is not responding".into());
             }
+            if std::time::Instant::now() >= deadline {
+                return Err("The running Annotate instance has not finished starting".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
         }
     }
 }
-pub struct Settings {
-    path: PathBuf,
-    data: Mutex<BTreeMap<String, Value>>,
+
+/// Starts the shortcut/tray thread. Returns once its window and hook exist.
+pub fn start(instance: &Instance) -> Result<(), String> {
+    let title = instance.title.clone();
+    let (ready, started) = mpsc::sync_channel(1);
+    let handle = std::thread::Builder::new()
+        .name("annotate-shortcuts".into())
+        .spawn(move || unsafe { service_thread(title, ready) })
+        .map_err(|e| e.to_string())?;
+    let _ = SERVICE_THREAD.set(Mutex::new(Some(handle)));
+    started
+        .recv()
+        .map_err(|_| "The shortcut service stopped while starting".to_string())?
 }
-impl Settings {
-    pub fn get(&self, key: &str) -> Option<Value> {
-        self.data
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(key)
-            .cloned()
-    }
-    fn save_locked(&self, data: &BTreeMap<String, Value>) -> Result<(), String> {
-        crate::native_data::atomic_write(
-            &self.path,
-            &serde_json::to_vec(data).map_err(|e| e.to_string())?,
-        )
-    }
-    pub fn update_and_save(
-        &self,
-        update: impl FnOnce(&mut BTreeMap<String, Value>),
-    ) -> Result<(), String> {
-        let mut data = self.data.lock().unwrap_or_else(|e| e.into_inner());
-        let previous = data.clone();
-        update(&mut data);
-        if let Err(error) = self.save_locked(&data) {
-            *data = previous;
-            return Err(error);
+
+/// Unregisters shortcuts, removes the tray icon, and joins the thread.
+pub fn stop() {
+    let thread = THREAD.load(Ordering::Acquire);
+    if thread != 0 {
+        unsafe {
+            let _ = PostThreadMessageW(thread, QUIT, WPARAM(0), LPARAM(0));
         }
-        Ok(())
     }
-    pub fn set_and_save(&self, key: &str, value: Value) -> Result<(), String> {
-        self.update_and_save(|data| {
-            data.insert(key.into(), value);
-        })
+    if let Some(handle) = SERVICE_THREAD
+        .get()
+        .and_then(|slot| slot.lock().ok().and_then(|mut h| h.take()))
+    {
+        let _ = handle.join();
     }
 }
 
@@ -182,8 +124,9 @@ struct RegisterRequest {
     slot: usize,
     combo: String,
     cancelled: Arc<AtomicBool>,
-    reply: std::sync::mpsc::SyncSender<Result<(), String>>,
+    reply: mpsc::SyncSender<Result<(), String>>,
 }
+
 pub fn register(slot: usize, combo: &str) -> Result<(), String> {
     if slot >= 2 {
         return Err("Unknown hotkey slot".into());
@@ -195,7 +138,7 @@ pub fn register(slot: usize, combo: &str) -> Result<(), String> {
     if unsafe { GetCurrentThreadId() } == thread {
         return unsafe { register_on_thread(slot, combo) };
     }
-    let (send, recv) = std::sync::mpsc::sync_channel(1);
+    let (send, recv) = mpsc::sync_channel(1);
     let cancelled = Arc::new(AtomicBool::new(false));
     let request = Box::new(RegisterRequest {
         slot,
@@ -514,7 +457,7 @@ unsafe extern "system" fn runtime_proc(
         TRAY => {
             let event = lparam.0 as u32 & 0xffff;
             if event == WM_LBUTTONUP || event == WM_LBUTTONDBLCLK {
-                crate::native_ui::show();
+                crate::ui::show();
             } else if event == WM_RBUTTONUP || event == WM_CONTEXTMENU {
                 if let Ok(menu) = CreatePopupMenu() {
                     let _ = AppendMenuW(menu, MF_STRING, 1, w!("Show Annotate"));
@@ -536,17 +479,17 @@ unsafe extern "system" fn runtime_proc(
                     // dismisses correctly when the user clicks elsewhere.
                     let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
                     if selected.0 == 1 {
-                        crate::native_ui::show();
+                        crate::ui::show();
                     }
                     if selected.0 == 2 {
-                        AppHandle.exit(0);
+                        crate::ui::quit();
                     }
                 }
             }
             LRESULT(0)
         }
         WM_COPYDATA => {
-            crate::native_ui::show();
+            crate::ui::show();
             LRESULT(1)
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -583,6 +526,95 @@ impl Drop for Tray {
         unsafe {
             let _ = Shell_NotifyIconW(NIM_DELETE, &self.0);
         }
+    }
+}
+
+unsafe fn service_thread(title: HSTRING, ready: mpsc::SyncSender<Result<(), String>>) {
+    let mut msg = MSG::default();
+    let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+    let setup = (|| -> Result<_, String> {
+        let instance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
+        if RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(runtime_proc),
+            hInstance: HINSTANCE(instance.0),
+            lpszClassName: CLASS,
+            ..Default::default()
+        }) == 0
+        {
+            return Err(windows::core::Error::from_win32().to_string());
+        }
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            CLASS,
+            &title,
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            None,
+            None,
+            Some(HINSTANCE(instance.0)),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        let window = Window(hwnd);
+        CLIPBOARD_OWNER.store(hwnd.0 as isize, Ordering::Release);
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(w!("TaskbarCreated")),
+            Ordering::Release,
+        );
+        let hook = Hook(
+            SetWindowsHookExW(
+                WH_KEYBOARD_LL,
+                Some(keyboard_hook),
+                Some(HINSTANCE(instance.0)),
+                0,
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        let tray = tray_data(hwnd)?;
+        let added = Shell_NotifyIconW(NIM_ADD, &tray).as_bool();
+        Ok((window, hook, Tray(tray), added))
+    })();
+    let (_window, _hook, _tray, added) = match setup {
+        Ok(services) => services,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+    THREAD.store(GetCurrentThreadId(), Ordering::Release);
+    let _ = ready.send(Ok(()));
+    if !added {
+        crate::native_core::get().status("Could not add the system tray icon", true);
+    }
+    loop {
+        let received = GetMessageW(&mut msg, None, 0, 0).0;
+        if received <= 0 {
+            break;
+        }
+        match msg.message {
+            QUIT => break,
+            REGISTER => {
+                let request = Box::from_raw(msg.lParam.0 as *mut RegisterRequest);
+                if !request.cancelled.load(Ordering::Acquire) {
+                    let _ = request
+                        .reply
+                        .send(register_on_thread(request.slot, &request.combo));
+                }
+            }
+            RELEASE => crate::native_core::get().hotkey(prefix(msg.wParam.0), false),
+            WM_HOTKEY => hotkey_message(&msg),
+            _ => {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
+    THREAD.store(0, Ordering::Release);
+    for slot in 0..2 {
+        let _ = UnregisterHotKey(None, slot + 1);
     }
 }
 
@@ -625,142 +657,6 @@ fn instance_identity(directory: &std::path::Path) -> String {
         .trim_end_matches('\\')
         .to_lowercase()
 }
-pub fn run() -> Result<(), String> {
-    unsafe {
-        let mut msg = MSG::default();
-        let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
-        let directory = AppHandle.app_local_data_dir()?;
-        let normalized = instance_identity(&directory);
-        let hash = sha2::Sha256::digest(normalized.as_bytes());
-        let name = HSTRING::from(format!("Local\\AnnotateNative-{hash:x}"));
-        let mutex = CreateMutexW(None, false, &name).map_err(|e| e.to_string())?;
-        let duplicate = GetLastError() == ERROR_ALREADY_EXISTS;
-        let _mutex = Handle(mutex);
-        let title = HSTRING::from(format!("Annotate runtime {hash:x}"));
-        if duplicate {
-            // The primary process may still be between creating its mutex and HWND.
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            loop {
-                if let Ok(existing) = FindWindowW(w!("AnnotateNativeRuntime"), &title) {
-                    let mut process = 0;
-                    GetWindowThreadProcessId(existing, Some(&mut process));
-                    let _ = AllowSetForegroundWindow(process);
-                    if SendMessageTimeoutW(
-                        existing,
-                        WM_COPYDATA,
-                        WPARAM(0),
-                        LPARAM(0),
-                        SMTO_ABORTIFHUNG,
-                        1000,
-                        None,
-                    )
-                    .0 != 0
-                    {
-                        return Ok(());
-                    }
-                    return Err("The running Annotate instance is not responding".into());
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err("The running Annotate instance has not finished starting".into());
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-        }
-        let instance = GetModuleHandleW(None).map_err(|e| e.to_string())?;
-        if RegisterClassW(&WNDCLASSW {
-            lpfnWndProc: Some(runtime_proc),
-            hInstance: HINSTANCE(instance.0),
-            lpszClassName: w!("AnnotateNativeRuntime"),
-            ..Default::default()
-        }) == 0
-        {
-            return Err(windows::core::Error::from_win32().to_string());
-        }
-        let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            w!("AnnotateNativeRuntime"),
-            &title,
-            WINDOW_STYLE(0),
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            Some(HINSTANCE(instance.0)),
-            None,
-        )
-        .map_err(|e| e.to_string())?;
-        let _window = Window(hwnd);
-        CLIPBOARD_OWNER.store(hwnd.0 as isize, Ordering::Release);
-        TASKBAR_CREATED.store(
-            RegisterWindowMessageW(w!("TaskbarCreated")),
-            Ordering::Release,
-        );
-        initialize_runtime()?;
-        THREAD.store(GetCurrentThreadId(), Ordering::Release);
-        let _ = crate::throbber::initialize();
-        crate::native_core::initialize(AppHandle)?;
-        crate::native_ui::initialize()?;
-        let _hook = Hook(
-            SetWindowsHookExW(
-                WH_KEYBOARD_LL,
-                Some(keyboard_hook),
-                Some(HINSTANCE(instance.0)),
-                0,
-            )
-            .map_err(|e| e.to_string())?,
-        );
-        let tray = tray_data(hwnd)?;
-        if !Shell_NotifyIconW(NIM_ADD, &tray).as_bool() {
-            crate::native_core::get().status("Could not add the system tray icon", true);
-        }
-        let _tray = Tray(tray);
-        crate::native_ui::show();
-        let result = loop {
-            let received = GetMessageW(&mut msg, None, 0, 0).0;
-            if received == 0 {
-                break Ok(());
-            }
-            if received < 0 {
-                break Err(windows::core::Error::from_win32().to_string());
-            }
-            match msg.message {
-                QUIT => break Ok(()),
-                REGISTER => {
-                    let request = Box::from_raw(msg.lParam.0 as *mut RegisterRequest);
-                    if !request.cancelled.load(Ordering::Acquire) {
-                        let _ = request
-                            .reply
-                            .send(register_on_thread(request.slot, &request.combo));
-                    }
-                }
-                RELEASE => crate::native_core::get().hotkey(prefix(msg.wParam.0), false),
-                WM_HOTKEY => hotkey_message(&msg),
-                _ => {
-                    let _ = TranslateMessage(&msg);
-                    DispatchMessageW(&msg);
-                }
-            }
-        };
-        THREAD.store(0, Ordering::Release);
-        for slot in 0..2 {
-            let _ = UnregisterHotKey(None, slot + 1);
-        }
-        crate::native_core::get().shutdown();
-        crate::google_auth::cancel_google_oauth();
-        let _ = crate::throbber::hide();
-        crate::native_ui::shutdown();
-        RUNTIME.get().unwrap().block_on(async {
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                crate::whisper_local::unload(),
-            )
-            .await;
-        });
-        result
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -780,41 +676,15 @@ mod tests {
         assert!(parse_shortcut("F25").is_err());
     }
     #[test]
-    fn settings_updates_are_serialized_and_rollback_when_save_fails() {
+    fn instance_identity_is_stable_before_the_directory_exists() {
         let directory = std::env::temp_dir().join(format!(
-            "annotate-settings-test-{}-{}",
+            "annotate-identity-test-{}-{}",
             std::process::id(),
             crate::native_data::now()
         ));
-        let settings = Arc::new(Settings {
-            path: directory.join("settings.json"),
-            data: Mutex::new(BTreeMap::new()),
-        });
         let identity = instance_identity(&directory);
-        let workers: Vec<_> = (0..4)
-            .map(|index| {
-                let settings = settings.clone();
-                std::thread::spawn(move || {
-                    settings
-                        .set_and_save(&format!("setting-{index}"), serde_json::json!(index))
-                        .unwrap();
-                })
-            })
-            .collect();
-        for worker in workers {
-            worker.join().unwrap();
-        }
+        std::fs::create_dir_all(&directory).unwrap();
         assert_eq!(instance_identity(&directory), identity);
-        let data: Value = serde_json::from_slice(&std::fs::read(&settings.path).unwrap()).unwrap();
-        assert_eq!(data.as_object().unwrap().len(), 4);
-        std::fs::remove_file(&settings.path).unwrap();
-        std::fs::create_dir(&settings.path).unwrap();
-        assert!(settings
-            .set_and_save("must-not-survive", Value::Bool(true))
-            .is_err());
-        assert!(settings.get("must-not-survive").is_none());
-        std::fs::remove_dir(&settings.path).unwrap();
-        std::fs::remove_file(settings.path.with_extension("tmp")).unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
 }

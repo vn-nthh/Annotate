@@ -13,28 +13,6 @@ fn main() {
     )
     .unwrap();
     println!("cargo:rerun-if-changed=../src/oauth.config.json");
-    let mut images =
-        String::from("pub fn image(name: &str) -> Option<&'static [u8]> { match name {\n");
-    let mut files: Vec<_> = std::fs::read_dir("assets")
-        .unwrap()
-        .map(|file| file.unwrap().path())
-        .collect();
-    files.sort();
-    for path in files {
-        if path.extension().is_some_and(|s| s == "png") {
-            images.push_str(&format!(
-                "{:?} => Some(include_bytes!({:?})),\n",
-                path.file_name().unwrap().to_str().unwrap(),
-                path.canonicalize().unwrap().to_str().unwrap()
-            ));
-        }
-    }
-    images.push_str("_ => None }}");
-    std::fs::write(
-        std::path::Path::new(&std::env::var_os("OUT_DIR").unwrap()).join("native-assets.rs"),
-        images,
-    )
-    .unwrap();
     println!("cargo:rerun-if-changed=assets");
     println!("cargo:rerun-if-changed=annotate.rc");
     println!("cargo:rerun-if-changed=annotate.manifest");

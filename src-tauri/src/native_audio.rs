@@ -172,10 +172,10 @@ unsafe fn drain(
         capture.GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
         if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || frames == 0 {
             samples.resize(samples.len() + frames as usize, 0);
-            let _ = crate::throbber::set_level(0.0);
+            let _ = crate::ui::overlay::set_level(0.0);
         } else {
             let packet = std::slice::from_raw_parts(data.cast::<i16>(), frames as usize);
-            let _ = crate::throbber::set_level((rms(packet) * 5.0).min(1.0));
+            let _ = crate::ui::overlay::set_level((rms(packet) * 5.0).min(1.0));
             samples.extend_from_slice(packet);
         }
         capture.ReleaseBuffer(frames)?;
