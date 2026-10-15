@@ -9,6 +9,7 @@ mod home;
 pub mod overlay;
 mod settings;
 mod setup;
+mod subtitle_preview;
 mod subtitles;
 mod text_input;
 mod theme;

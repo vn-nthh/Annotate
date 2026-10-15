@@ -4,7 +4,7 @@ use super::home::{header, panel};
 use super::settings::{group, languages};
 use super::theme::{rem, MEDIUM, MONO, SEMIBOLD};
 use super::window::MainWindow;
-use gpui::{div, prelude::*, px, Context, Div, SharedString, Window};
+use gpui::{div, prelude::*, px, Context, Div, Window};
 
 impl MainWindow {
     fn sub_progress(&self) -> Option<Div> {
@@ -262,7 +262,6 @@ impl MainWindow {
             .and_then(|p| p.to_str())
             .unwrap_or("Subtitles")
             .to_owned();
-        let preview = crate::subtitle::format_srt(&s.entries);
         let busy = s.busy.contains("sub-summarize-btn");
         let key_missing = s.label("openrouter-key-input", "").is_empty();
         let locked = s.busy.contains("sub-generate-btn") || busy;
@@ -383,17 +382,7 @@ impl MainWindow {
                             .text_size(rem(0.72))
                             .line_height(rem(0.72 * 1.55))
                             .text_color(t.ink)
-                            .children(
-                                preview
-                                    .trim_end()
-                                    .lines()
-                                    .map(|line| {
-                                        div()
-                                            .min_h(rem(0.72 * 1.55))
-                                            .child(SharedString::from(line.to_owned()))
-                                    })
-                                    .collect::<Vec<_>>(),
-                            ),
+                            .child(self.preview.clone()),
                     )
                     .children(self.scrollbar("preview", cx)),
             )

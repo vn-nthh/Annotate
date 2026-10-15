@@ -91,6 +91,13 @@ def main():
                 capture(f'{theme}:subtitling-'+('summary' if summary else 'result'))
             page.evaluate("() => {document.getElementById('sub-summary-text').textContent='A long summary must not push the actions out of reach. '.repeat(14);document.getElementById('tab-subtitling').scrollTop=10000;}")
             capture(f'{theme}:subtitling-long-summary')
+            stress = args.output / 'stress'
+            stress.mkdir(exist_ok=True)
+            large_srt = '\n\n'.join(f"{i}\n{(i-1)*3//3600:02d}:{(i-1)*3//60%60:02d}:{(i-1)*3%60:02d},000 --> {((i-1)*3+2)//3600:02d}:{((i-1)*3+2)//60%60:02d}:{((i-1)*3+2)%60:02d},500\nEntry {i}: subtitles wrap while scrolling through a long transcript.\nUnicode: 你好 日本語 café 😊" for i in range(1, 3001))
+            page.evaluate("s=>{document.getElementById('sub-summary').style.display='none';document.getElementById('tab-subtitling').scrollTop=0;document.getElementById('sub-result-title').textContent='large-subtitles';document.getElementById('sub-preview-count').textContent='3000 entries';document.getElementById('sub-preview').textContent=s;}", large_srt)
+            for position, offset in [('top', 0), ('bottom', 1e9)]:
+                page.evaluate("y=>document.getElementById('sub-preview').scrollTop=y", offset)
+                page.screenshot(path=str(stress / f'{theme}-{round(args.scale*96)}-{position}.png'))
             page.evaluate("() => {for(const id of ['sub-desc','sub-file-zone','sub-lang-group','sub-deps','sub-generate-btn'])document.getElementById(id).style.display='';for(const id of ['sub-result','sub-summary'])document.getElementById(id).style.display='none';}")
             for ready in (False,True):
                 page.evaluate("v=>{document.getElementById('sub-file-zone').classList.add('has-file');document.getElementById('sub-file-name').textContent='example.wav';document.getElementById('sub-deps').style.display=v?'none':'';document.getElementById('sub-generate-btn').disabled=!v;}",ready)

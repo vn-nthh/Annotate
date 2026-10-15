@@ -46,6 +46,7 @@ pub struct Inputs {
 
 pub struct MainWindow {
     pub state: State,
+    pub(super) preview: super::subtitle_preview::Preview,
     pub theme: Theme,
     pub tab: String,
     pub modal: bool,
@@ -283,6 +284,7 @@ impl MainWindow {
             api_drafts: HashMap::new(),
             recorded_key: None,
             state,
+            preview: Default::default(),
             theme,
             tab: if memory.tab.is_empty() {
                 "home".into()
@@ -324,11 +326,19 @@ impl MainWindow {
                 });
             }
         }
+        view.preview.set_entries(&view.state.entries);
         window.focus(&view.root_focus);
         if view.setup().is_open() {
             view.focus_setup(window, cx);
         }
         view
+    }
+
+    fn set_state(&mut self, state: State) {
+        if self.state.entries != state.entries {
+            self.preview.set_entries(&state.entries);
+        }
+        self.state = state;
     }
 
     /// Shows a fixed state without reading the core (reference captures).
@@ -343,7 +353,7 @@ impl MainWindow {
         self.theme = Theme::new(state.dark());
         cx.set_global(CurrentTheme(self.theme));
         self.api_key_mode = state.mode();
-        self.state = state;
+        self.set_state(state);
         self.tab = tab.into();
         self.modal = modal;
         self.open_select = None;
@@ -378,7 +388,7 @@ impl MainWindow {
 
     /// Takes the latest core state and refreshes fields that are not being edited.
     fn sync(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        self.state = get().snapshot();
+        self.set_state(get().snapshot());
         let theme = Theme::new(self.state.dark());
         if theme.dark != self.theme.dark {
             self.theme = theme;
@@ -560,7 +570,7 @@ impl MainWindow {
         if saved {
             input.update(cx, |input, _| input.dirty = false);
         }
-        self.state = state;
+        self.set_state(state);
         cx.notify();
     }
 
@@ -629,7 +639,7 @@ impl MainWindow {
         self.inputs
             .dict
             .update(cx, |input, cx| input.set_text("", cx));
-        self.state = get().snapshot();
+        self.set_state(get().snapshot());
         cx.notify();
     }
 
@@ -874,7 +884,7 @@ impl MainWindow {
     /// Back, Continue, and Exit setup.
     pub fn setup_step(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.commit_edits(cx);
-        self.state = get().snapshot();
+        self.set_state(get().snapshot());
         let mut guide = self.setup();
         match id {
             "ob-exit" => {
@@ -914,7 +924,7 @@ impl MainWindow {
         if let Err(error) = get().set_setting(setup::KEY, guide.to_value()) {
             get().status(&error, true);
         }
-        self.state = get().snapshot();
+        self.set_state(get().snapshot());
         if open {
             self.focus_setup(window, cx);
         } else {
@@ -1454,7 +1464,7 @@ impl MainWindow {
             id => id,
         };
         get().action(action, value);
-        self.state = get().snapshot();
+        self.set_state(get().snapshot());
         cx.notify();
     }
 

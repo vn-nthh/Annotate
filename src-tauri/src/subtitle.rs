@@ -34,7 +34,7 @@ const MIN_GAP_SECONDS: f64 = 0.08; // ~2 frames at 24fps
 // ── Types ──────────────────────────────────────────────
 
 /// A single subtitle entry ready for SRT output.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SrtEntry {
     pub index: usize,
     pub start: f64,

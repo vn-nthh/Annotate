@@ -64,7 +64,7 @@ if (-not (Test-Path -LiteralPath $checksPath) -or $sceneCount -lt 80 -or
 }
 $checksJson = Get-Content -LiteralPath $checksPath -Raw -Encoding UTF8
 $checks = ConvertFrom-Json -InputObject $checksJson
-if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -lt 28 -or
+if (-not $checksJson.TrimStart().StartsWith('[') -or $checks.Count -lt 30 -or
     @($checks | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -ne 0) {
   throw "Packaged UI harness produced no valid passed-check array; files remain at $testDir"
 }

@@ -275,6 +275,7 @@ async fn capture_all(
         }) {
             capture_scene(handle, scene, &scaled, cx).await?;
         }
+        capture_large_preview(handle, &long_summary, directory, cx).await?;
         Ok::<(), String>(())
     }
     .await;
@@ -282,6 +283,7 @@ async fn capture_all(
     captures?;
     restored?;
     let mut checks = super::checks::run(handle, long_summary, cx).await?;
+    checks.push("A 3000-entry subtitle preview reuses its wrapped layout on repaint and wheel scrolling, paints fewer than 64 source lines, and reaches the last entry in both themes at 100% and 150%");
     checks.insert(0, "Simulated WM_DPICHANGED renders at 150% with a 520x580 logical / 780x870 pixel client, then restores the original DPI");
     std::fs::write(
         directory.join("checks.json"),
@@ -289,6 +291,94 @@ async fn capture_all(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+async fn capture_large_preview(
+    handle: WindowHandle<MainWindow>,
+    initial: &State,
+    directory: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let directory = directory.join("stress");
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let mut metrics = Vec::new();
+    for dpi in [96, 144] {
+        set_dpi(handle, dpi, cx).await?;
+        for theme in ["light", "dark"] {
+            let mut state = initial.clone();
+            state.summary.clear();
+            state.file = Some("large-subtitles.wav".into());
+            state.settings.insert("theme".into(), json!(theme));
+            state.entries = (1..=3000)
+                .map(|index| crate::subtitle::SrtEntry {
+                    index,
+                    start: (index - 1) as f64 * 3.,
+                    end: (index - 1) as f64 * 3. + 2.5,
+                    text: format!("Entry {index}: subtitles wrap while scrolling through a long transcript.\nUnicode: 你好 日本語 café 😊"),
+                })
+                .collect();
+            let scene = Scene {
+                name: format!("{theme}-{dpi}-top"),
+                tab: "subtitling",
+                modal: false,
+                state,
+                bottom: None,
+            };
+            capture_scene(handle, &scene, &directory, cx).await?;
+            let first = handle
+                .update(cx, |view, _, _| view.preview.stats())
+                .map_err(|e| e.to_string())?;
+            handle
+                .update(cx, |_, window, cx| {
+                    crate::platform::post_wheel(window, 200., 260., -6);
+                    cx.notify();
+                })
+                .map_err(|e| e.to_string())?;
+            settle(cx).await;
+            let scrolled = handle
+                .update(cx, |view, _, _| view.preview.stats())
+                .map_err(|e| e.to_string())?;
+            handle
+                .update(cx, |view, _, cx| view.scroll_to_bottom("preview", cx))
+                .map_err(|e| e.to_string())?;
+            settle(cx).await;
+            let last = handle
+                .update(cx, |view, window, _| {
+                    crate::platform::capture_window(
+                        window,
+                        &directory.join(format!("{theme}-{dpi}-bottom.png")),
+                    )?;
+                    Ok::<_, String>(view.preview.stats())
+                })
+                .map_err(|e| e.to_string())??;
+            if first.2 != 14999
+                || first.1.start != 0
+                || first.1.is_empty()
+                || first.1.len() >= 64
+                || scrolled.0 != first.0
+                || scrolled.1.start <= first.1.start
+                || scrolled.1.len() >= 64
+                || last.0 != first.0
+                || last.1.end != first.2
+                || last.1.is_empty()
+                || last.1.len() >= 64
+            {
+                return Err(format!(
+                    "Large preview failed at {theme}/{dpi}: {first:?}, {scrolled:?}, {last:?}"
+                ));
+            }
+            metrics.push(json!({
+                "theme": theme, "dpi": dpi, "entries": 3000,
+                "sourceLines": first.2, "layoutBuilds": first.0,
+                "top": first.1, "scrolled": scrolled.1, "bottom": last.1,
+            }));
+        }
+    }
+    std::fs::write(
+        directory.join("metrics.json"),
+        serde_json::to_vec_pretty(&metrics).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 async fn capture_scene(
