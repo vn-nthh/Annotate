@@ -26,6 +26,7 @@ struct ChatCompletionResponse {
 #[derive(Debug, Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
+    finish_reason: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +75,7 @@ pub async fn summarize_text(api_key: &str, transcript: &str) -> Result<String, S
             },
         ],
         "max_tokens": SUMMARY_MAX_TOKENS,
+        "reasoning": { "effort": "none" },
         "response_format": { "type": "json_object" },
     });
 
@@ -100,10 +102,21 @@ pub async fn summarize_text(api_key: &str, transcript: &str) -> Result<String, S
         .json()
         .await
         .map_err(|e| format!("Failed to parse OpenRouter response: {}", e))?;
-    let content = completion
+    completion_summary(completion)
+}
+
+fn completion_summary(completion: ChatCompletionResponse) -> Result<String, String> {
+    let choice = completion
         .choices
         .first()
-        .and_then(|choice| choice.message.content.as_deref())
+        .ok_or_else(|| "OpenRouter summary response was empty".to_string())?;
+    if choice.finish_reason != "stop" {
+        return Err("OpenRouter returned an incomplete summary. Try again.".into());
+    }
+    let content = choice
+        .message
+        .content
+        .as_deref()
         .ok_or_else(|| "OpenRouter summary response was empty".to_string())?;
 
     extract_summary_text(content)
@@ -115,16 +128,17 @@ fn extract_summary_text(content: &str) -> Result<String, String> {
         return Err("OpenRouter summary response was empty".to_string());
     }
 
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(summary) = value.get("summary").and_then(|value| value.as_str()) {
-            let summary = summary.trim();
-            if !summary.is_empty() {
-                return Ok(summary.to_string());
-            }
-        }
+    #[derive(Deserialize)]
+    struct Summary {
+        summary: String,
     }
-
-    Ok(trimmed.to_string())
+    let value: Summary = serde_json::from_str(trimmed)
+        .map_err(|_| "OpenRouter returned an invalid summary. Try again.".to_string())?;
+    let summary = value.summary.trim();
+    if summary.is_empty() {
+        return Err("OpenRouter summary response was empty".into());
+    }
+    Ok(summary.to_owned())
 }
 
 fn normalize_text(text: &str) -> String {
@@ -159,5 +173,28 @@ mod tests {
     fn extracts_summary_from_json_payload() {
         let summary = extract_summary_text(r#"{"summary":"Hello\nworld"}"#).unwrap();
         assert_eq!(summary, "Hello\nworld");
+    }
+
+    #[test]
+    fn rejects_truncated_or_invalid_summary_responses() {
+        for (reason, content) in [
+            ("length", r#"{"summary":"Looks complete"}"#),
+            ("length", ""),
+            ("content_filter", r#"{"summary":"Filtered"}"#),
+            ("stop", r#"{"summary":"Cut off"#),
+            ("stop", "Unstructured text"),
+            ("stop", r#"{"summary":"  "}"#),
+            ("stop", r#"{"other":"Missing summary"}"#),
+        ] {
+            let response = serde_json::from_value(serde_json::json!({
+                "choices": [{"finish_reason": reason, "message": {"content": content}}]
+            }))
+            .unwrap();
+            assert!(completion_summary(response).is_err(), "{reason}: {content}");
+        }
+        let response = serde_json::from_value(serde_json::json!({
+            "choices": [{"finish_reason":"stop", "message":{"content":"{\"summary\":\" Complete \"}"}}]
+        })).unwrap();
+        assert_eq!(completion_summary(response).unwrap(), "Complete");
     }
 }
