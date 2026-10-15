@@ -150,14 +150,21 @@ The archive command now requests terminating errors explicitly with
 `Compress-Archive -ErrorAction Stop`; a locked-file check confirms it throws.
 The installer was built but installation and uninstallation were not run.
 
-Release executable SHA-256:
-`DFEA36FFCC279A18C5A96548BD89418931DC35053E6CCC95854509BF316A9CE9`.
+The v0.4.0 version bump was rebuilt locally and passed the same 52 Rust tests
+and 33 packaged UI checks. Cargo/npm manifests and lockfiles, the app's Windows
+version resource, and the installer report 0.4.0. No UI behavior changed;
+the performance report above remains the pre-version-bump `22ca735` sample.
+GitHub's tag workflow rebuilds the published assets separately; their digests
+are available on the release page.
+
+Local v0.4.0 executable SHA-256:
+`C897A1481455B6711B79372459BE6A4073D748CA86BB511A0A55D8669D2CFEF8`.
 Vulkan worker SHA-256:
 `939238541825C28A9DC23025C4D270D312CE29A104D55C3E99428BB10B13625F`.
-Portable ZIP SHA-256:
-`EAC7FBF1B06FBC0E94B32AED8FA5F02639AD72BCEAA83C0D7524E8EB4127FD91`.
-Setup executable SHA-256:
-`DCD1E14ACA1C1CF798989CCE7DF50627EE34B5F1DE09E0D25569DE8E636F7A99`.
+Local v0.4.0 portable ZIP SHA-256:
+`3611AB192CB4BE69174F40CD07EF513CFBFB79AD05DB018B45006AF05C62553E`.
+Local v0.4.0 setup executable SHA-256:
+`E17A114489A4D60F9715258F5ED249E2B59683001946864E37FB7F0ED1B9FDAB`.
 
 Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
 input and paste into another app, physical Caps Lock combinations and global
