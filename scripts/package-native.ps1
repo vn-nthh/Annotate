@@ -46,7 +46,7 @@ Models are downloaded from Settings when requested. No WebView2 is required.
 Settings and data remain in your Windows profile when this folder is replaced.
 "@, (New-Object Text.UTF8Encoding($false)))
 $archivePath = Join-Path $dist "Annotate-$version-windows-x64.zip"
-Compress-Archive -LiteralPath $packageDir -DestinationPath $archivePath -Force
+Compress-Archive -LiteralPath $packageDir -DestinationPath $archivePath -Force -ErrorAction Stop
 Write-Host "Native package: $archivePath"
 
 # The installer upgrades previous Tauri NSIS installs in place.
