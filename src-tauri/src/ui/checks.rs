@@ -357,6 +357,45 @@ pub async fn run(
     passed
         .push("Padding clicks place the caret and text selection follows drags outside the field");
 
+    for (replacement, x) in [("a", 410.), ("你好", 114.)] {
+        view(handle, cx, |view, _, cx| {
+            view.inputs
+                .dict
+                .update(cx, |input, cx| input.set_text("abcdef", cx));
+        })?;
+        settle(cx).await;
+        let edited = view(handle, cx, |view, window, cx| {
+            view.inputs.dict.update(cx, |input, cx| {
+                input.set_text(replacement, cx);
+                input.on_mouse_down(
+                    &gpui::MouseDownEvent {
+                        position: point(px(x), px(166.)),
+                        button: gpui::MouseButton::Left,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    },
+                    window,
+                    cx,
+                );
+                input.replace_text_in_range(None, "x", window, cx);
+                let edited = input.text().chars().count() == replacement.chars().count() + 1;
+                input.set_text("", cx);
+                edited
+            })
+        })?;
+        view(handle, cx, |_, window, _| {
+            crate::platform::post_mouse_button(window, x, 166., false);
+        })?;
+        ensure(
+            edited,
+            "A click using the previous text layout corrupted an edit",
+        )?;
+    }
+    passed.push(
+        "Clicks between replacement and repaint keep ASCII and multibyte caret offsets valid",
+    );
+
     let composition = view(handle, cx, |view, window, cx| {
         view.inputs.dict.update(cx, |input, cx| {
             input.set_text("A😊Z", cx);

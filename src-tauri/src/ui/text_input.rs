@@ -305,6 +305,11 @@ impl TextInput {
                 .nth(offset / BULLET.len())
                 .map_or(self.content.len(), |(index, _)| index)
         } else {
+            // Hit tests can still refer to the layout from before an edit.
+            let mut offset = offset.min(self.content.len());
+            while !self.content.is_char_boundary(offset) {
+                offset -= 1;
+            }
             offset
         }
     }
