@@ -27,17 +27,25 @@ use std::sync::Mutex;
 
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+#[cfg(target_os = "macos")]
+#[path = "platform/macos.rs"]
+mod macos;
+
 static CTX: Mutex<Option<WhisperContext>> = Mutex::new(None);
 
 fn backend_name() -> &'static str {
     if cfg!(feature = "vulkan") {
         "vulkan"
+    } else if cfg!(feature = "metal") {
+        "metal"
     } else {
         "cpu"
     }
 }
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    macos::watch_parent();
     let stdin = io::stdin();
     let stdout = io::stdout();
     let mut out = stdout.lock();

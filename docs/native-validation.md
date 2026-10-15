@@ -7,8 +7,8 @@ The settings window, setup guide, controls, text input, and recording overlay
 are drawn by GPUI 0.2.2. Shortcuts, tray, synthetic input, dialogs, overlay window
 styles, WASAPI capture, locale collation, legacy profile access, and child-process
 lifetime are behind `src/platform/windows`. Windows remains the only
-implemented platform; macOS still needs its OS services, audio capture,
-permissions, model backend, and packaging.
+stable platform. The Apple silicon preview's separate checks and limits are
+described below.
 
 ### Build and behavior
 
@@ -170,6 +170,47 @@ Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
 input and paste into another app, physical Caps Lock combinations and global
 hotkey registration, a real IME session, and macOS were not exercised by this
 validation.
+
+## Apple silicon preview
+
+The preview targets macOS 13+ on arm64 and reuses the GPUI views and native core.
+`src/platform/macos` supplies AppKit window, clipboard, file-sheet, menu-bar and
+single-instance services; Carbon hotkeys through `global-hotkey`; and CoreAudio
+device/capture services through CPAL. Those two dependencies are macOS-only;
+the Cocoa/Objective-C bridge dependencies already belong to GPUI's macOS graph.
+Neither adds Windows runtime code. Streams and their capture thread are created
+only during recording; shortcut events share GPUI's main run loop.
+
+Whisper runs in a lazy Metal worker with embedded shader source. A dispatch
+process source terminates it when its parent exits, including during inference.
+The package check exercises that lifetime with a busy fixture, without models.
+FFmpeg is a pinned arm64 download from `eugeneware/ffmpeg-static`, verified by
+SHA-256 and marked executable after download. Settings/data use
+`~/Library/Application Support/com.annotate.app`; credentials use Keychain.
+The app does not import a Windows WebView2 profile on macOS.
+
+The Apple Silicon Preview workflow builds on `macos-14` arm64, runs Rust tests,
+packages the app and checks an extracted ZIP. It verifies both Mach-O binaries
+are arm64, the app/installer metadata, microphone usage description, ad-hoc
+signature, command-line startup, AppKit menu-bar creation/removal, Carbon
+shortcut registration/removal, Metal worker protocol, and parent-exit
+termination. The native service probe uses an isolated profile and registers
+an unused shortcut; it does not send or observe a physical key press.
+The ZIP and DMG contain the app, worker, required non-system
+dylibs, icon, and font license; no browser runtime, raw fonts, or models.
+
+The runner's Metal probe returns `unavailable`. No rendered GPUI, GPU inference,
+microphone, physical hotkeys, paste, Keychain interaction, Google sign-in,
+Gatekeeper launch, or multi-monitor/DPI behavior is validated there. There are
+no macOS UI startup, memory, or idle-CPU measurements. HTML design references
+can be generated with `capture-native-reference.py --platform macos`, but the
+native image-capture harness currently remains Windows-only. macOS screenshots
+and a hands-on recording-to-paste check remain required before a stable release.
+
+The preview is ad-hoc signed, not Developer ID signed or notarized. It requires
+Microphone and Accessibility grants; Caps Lock hold-to-talk is unsupported,
+and Command+C / Command+V are reserved for clipboard operations. Native app-menu
+actions include Command+Q and Command+,; the menu-bar icon reopens the window.
 
 ## Historical Win32 validation
 

@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 default = ["vulkan"]
 vulkan = ["whisper-rs/vulkan"]
+metal = ["whisper-rs/metal"]
 
 [dependencies]
 serde_json = "1.0"

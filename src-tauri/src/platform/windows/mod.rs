@@ -33,6 +33,10 @@ pub fn roaming_data_dir() -> Result<PathBuf, String> {
         .ok_or("APPDATA is not available".into())
 }
 
+pub fn mark_executable(_: &std::path::Path) -> Result<(), String> {
+    Ok(())
+}
+
 pub fn start_services(instance: &Instance) -> Result<(), String> {
     services::start(instance)
 }

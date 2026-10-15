@@ -18,6 +18,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--browser', default=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe')
     parser.add_argument('--scale', type=float, default=1, help='Pixel scale; the logical viewport stays 520 x 580')
+    parser.add_argument('--platform', choices=('windows', 'macos'), default='windows', help='Platform-specific copy and titlebar reference')
     args = parser.parse_args()
     if not math.isfinite(args.scale) or args.scale <= 0:
         parser.error('--scale must be finite and greater than zero')
@@ -33,6 +34,14 @@ def main():
             html=html.replace('./'+logo,'data:image/svg+xml;base64,'+data)
         page.set_content(html)
         page.add_style_tag(content=(ROOT/'src'/'index.css').read_text(encoding='utf8'))
+        if args.platform == 'macos':
+            page.evaluate('''() => {
+              document.documentElement.dataset.platform='macos';
+              for(const el of document.querySelectorAll('[data-macos]')) {
+                el.textContent=el.dataset.macos;
+                if(el.dataset.macosValue)el.value=el.dataset.macosValue;
+              }
+            }''')
         page.add_style_tag(content='*,*::before,*::after {animation:none!important;transition:none!important;}'+''.join(f"@font-face{{font-family:Satoshi;font-weight:{w};src:url(data:font/otf;base64,{base64.b64encode((ASSETS/'fonts'/f'Satoshi-{w}.otf').read_bytes()).decode()});}}" for w in (300,400,500,700)))
         # Offline profile-photo fixtures exercise PNG/JPEG decoding and circular cropping.
         avatar=page.evaluate("""() => {const c=document.createElement('canvas');c.width=96;c.height=64;const x=c.getContext('2d');for(const [color,a,b]of [['#517b9b',0,0],['#ae7864',48,0],['#80977b',0,32],['#c9ac73',48,32]]){x.fillStyle=color;x.fillRect(a,b,48,32);}return [c.toDataURL('image/png'),c.toDataURL('image/jpeg',.9)];}""")
@@ -62,7 +71,7 @@ def main():
             page.locator('[data-tab=settings]').click()
             for mode in ('groq','azure-mai','local'):
                 page.locator('#mode-select').select_option(mode)
-                for accel in ('vulkan',):
+                for accel in (('metal',) if args.platform == 'macos' else ('vulkan',)):
                     if mode=='local':page.locator('#acceleration-select').select_option(accel)
                     for grammar in (False,True):
                         page.evaluate('(v)=>{document.querySelector("#grammar-toggle").checked=v;document.querySelector("#gec-model-section").style.display=v?"":"none"}',grammar)
@@ -72,7 +81,8 @@ def main():
             page.evaluate("document.getElementById('tab-settings').scrollTop=10000")
             page.screenshot(path=str(args.output/f'{theme}-settings-bottom.png'))
             page.locator('[data-tab=home]').click()
-            page.locator('#titlebar-close').click()
+            if args.platform == 'macos':page.evaluate("document.getElementById('titlebar-close').click()")
+            else:page.locator('#titlebar-close').click()
             capture(f'{theme}:modal')
             page.locator('#modal-cancel').click()
             # Setup guide: one scene per step, plus the chosen engine where it changes the step.

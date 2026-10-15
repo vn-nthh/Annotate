@@ -411,11 +411,19 @@ impl MainWindow {
                     .flex_col()
                     .child(self.ob_title("Download the local model"))
                     .child(self.ob_desc(
-                        "Whisper Large v3 Turbo runs on your graphics card through Vulkan, so dictation works offline and stays on this PC.",
+                        if cfg!(target_os = "macos") {
+                            "Whisper Large v3 Turbo runs on the Apple GPU through Metal, so dictation works offline and stays on this Mac."
+                        } else {
+                            "Whisper Large v3 Turbo runs on your graphics card through Vulkan, so dictation works offline and stays on this PC."
+                        },
                     ))
                     .child(self.model_step(cx))
                     .child(ui::hint(
-                        "Needs a graphics card with a current Vulkan driver (AMD, Intel, or NVIDIA). You can pause the download and resume it later.",
+                        if cfg!(target_os = "macos") {
+                            "Uses the Apple GPU. You can pause the download and resume it later."
+                        } else {
+                            "Needs a graphics card with a current Vulkan driver (AMD, Intel, or NVIDIA). You can pause the download and resume it later."
+                        },
                         &t,
                     )),
                 _ => div()
@@ -455,7 +463,9 @@ impl MainWindow {
                     .flex()
                     .flex_col()
                     .child(self.ob_title("Pick your microphone"))
-                    .child(self.ob_desc("Annotate only listens while you hold the hotkey."))
+                    .child(self.ob_desc(if cfg!(target_os = "macos") {
+                        "Annotate only listens while you hold the hotkey. Allow microphone access when macOS asks."
+                    } else { "Annotate only listens while you hold the hotkey." }))
                     .child(ui::label("Microphone", &t))
                     .child(self.select(
                         "ob-mic-select",
@@ -517,7 +527,9 @@ impl MainWindow {
                         ),
                 )
                 .child(ui::hint(
-                    "Pick keys you don't use for anything else. Press Esc to cancel recording.",
+                    if cfg!(target_os = "macos") {
+                        "Choose a letter, number, or function key. Caps Lock is unavailable in this preview. Press Esc to cancel."
+                    } else { "Pick keys you don't use for anything else. Press Esc to cancel recording." },
                     &t,
                 )),
             "try" => {

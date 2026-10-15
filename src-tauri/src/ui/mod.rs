@@ -1,7 +1,9 @@
 //! GPUI front end. Everything here runs on the main thread; other threads reach
 //! it through the functions below, which post to a channel the UI drains.
 mod assets;
+#[cfg(target_os = "windows")]
 mod capture;
+#[cfg(target_os = "windows")]
 mod checks;
 mod components;
 mod dictionary;
@@ -38,6 +40,9 @@ enum Event {
 static SENDER: OnceLock<futures_channel::mpsc::UnboundedSender<Event>> = OnceLock::new();
 // Collapses bursts of state changes (download progress, sync) into one repaint.
 static REFRESH_PENDING: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "macos")]
+gpui::actions!(annotate_macos, [Quit, OpenSettings]);
 
 fn send(event: Event) {
     if let Some(sender) = SENDER.get() {
@@ -93,7 +98,15 @@ pub fn run(start: impl FnOnce() -> Result<(), String> + 'static) -> Result<(), S
 }
 
 pub fn capture(directory: std::path::PathBuf) -> Result<(), String> {
-    capture::run(directory)
+    #[cfg(target_os = "windows")]
+    {
+        capture::run(directory)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = directory;
+        Err("The image-capture harness currently requires Windows. macOS preview checks cover the build and bundle, not rendered UI.".into())
+    }
 }
 
 fn run_with(start: impl FnOnce(&mut App) -> Result<(), String> + 'static) -> Result<(), String> {
@@ -103,33 +116,58 @@ fn run_with(start: impl FnOnce(&mut App) -> Result<(), String> + 'static) -> Res
         .map_err(|_| "The UI is already running".to_string())?;
     let outcome = Rc::new(RefCell::new(Ok(())));
     let result = outcome.clone();
-    Application::new()
-        .with_assets(assets::Assets)
-        .run(move |cx: &mut App| {
-            theme::load_fonts(cx);
-            text_input::bind_keys(cx);
-            window::bind_keys(cx);
-            cx.set_global(UiState {
-                main: None,
-                memory: Memory {
-                    tab: "home".into(),
-                    ..Default::default()
-                },
-            });
-            overlay::install(cx);
-            cx.spawn(async move |cx| {
-                while let Some(event) = receiver.next().await {
-                    if cx.update(|cx| handle(event, cx)).is_err() {
-                        break;
-                    }
-                }
-            })
-            .detach();
-            if let Err(error) = start(cx) {
-                *result.borrow_mut() = Err(error);
+    let application = Application::new().with_assets(assets::Assets);
+    #[cfg(target_os = "macos")]
+    application.on_reopen(|cx| {
+        if cx.try_global::<UiState>().is_some() {
+            window::open(cx, false);
+        }
+    });
+    application.run(move |cx: &mut App| {
+        theme::load_fonts(cx);
+        text_input::bind_keys(cx);
+        window::bind_keys(cx);
+        #[cfg(target_os = "macos")]
+        {
+            cx.bind_keys([
+                gpui::KeyBinding::new("cmd-q", Quit, None),
+                gpui::KeyBinding::new("cmd-,", OpenSettings, None),
+            ]);
+            cx.on_action(|_: &Quit, cx| {
+                window::commit(cx);
                 cx.quit();
-            }
+            });
+            cx.on_action(|_: &OpenSettings, cx| window::open(cx, true));
+            cx.set_menus(vec![gpui::Menu {
+                name: "Annotate".into(),
+                items: vec![
+                    gpui::MenuItem::action("Settings", OpenSettings),
+                    gpui::MenuItem::separator(),
+                    gpui::MenuItem::action("Quit Annotate", Quit),
+                ],
+            }]);
+        }
+        cx.set_global(UiState {
+            main: None,
+            memory: Memory {
+                tab: "home".into(),
+                ..Default::default()
+            },
         });
+        overlay::install(cx);
+        cx.spawn(async move |cx| {
+            while let Some(event) = receiver.next().await {
+                if cx.update(|cx| handle(event, cx)).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        if let Err(error) = start(cx) {
+            *result.borrow_mut() = Err(error);
+            cx.quit();
+        }
+    });
     outcome.replace(Ok(()))
 }
 

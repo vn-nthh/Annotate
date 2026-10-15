@@ -6,3 +6,9 @@
 mod windows;
 #[cfg(target_os = "windows")]
 pub use self::windows::*;
+#[cfg(target_os = "macos")]
+// objc 0.2's selector macros emit a legacy cargo-clippy cfg at the call site.
+#[allow(unexpected_cfgs)]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use self::macos::*;

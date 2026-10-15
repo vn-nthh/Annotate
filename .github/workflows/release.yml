@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - 'v*'
+      # Apple silicon previews use their own arm64 build and verified assets.
+      - '!v*-macos-preview.*'
   workflow_dispatch:
 
 jobs:

@@ -2,8 +2,8 @@
 1 24 "annotate.manifest"
 
 1 VERSIONINFO
-FILEVERSION 0,4,0,0
-PRODUCTVERSION 0,4,0,0
+FILEVERSION 0,5,0,0
+PRODUCTVERSION 0,5,0,0
 FILEOS 0x40004
 FILETYPE 0x1
 BEGIN
@@ -13,9 +13,9 @@ BEGIN
     BEGIN
       VALUE "CompanyName", "annotate\0"
       VALUE "FileDescription", "Annotate\0"
-      VALUE "FileVersion", "0.4.0\0"
+      VALUE "FileVersion", "0.5.0-macos-preview.1\0"
       VALUE "ProductName", "Annotate\0"
-      VALUE "ProductVersion", "0.4.0\0"
+      VALUE "ProductVersion", "0.5.0-macos-preview.1\0"
     END
   END
   BLOCK "VarFileInfo"

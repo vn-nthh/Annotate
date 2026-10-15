@@ -8,6 +8,7 @@ $releaseDir = Join-Path $env:CARGO_TARGET_DIR 'release'
 $manifest = Get-Content -Raw -LiteralPath (Join-Path $repoRoot 'src-tauri\Cargo.toml')
 $version = [regex]::Match($manifest, '(?m)^version\s*=\s*"([^"]+)"').Groups[1].Value
 if (-not $version) { throw 'Cannot find the Annotate package version.' }
+$numericVersion = $version.Split('-')[0]
 
 $dist = Join-Path $repoRoot 'dist'
 $packageDir = [IO.Path]::GetFullPath((Join-Path $dist "Annotate-$version-windows-x64"))
@@ -60,6 +61,6 @@ if (-not $makensis) {
   if (-not $makensis) { throw 'NSIS (makensis) is required to build the installer.' }
 }
 $installerPath = Join-Path $dist "Annotate-$version-windows-x64-setup.exe"
-& $makensis /V2 "/DVERSION=$version" "/DSOURCE_DIR=$packageDir" "/DICON=$(Join-Path $repoRoot 'src-tauri\icons\icon.ico')" "/DOUTFILE=$installerPath" (Join-Path $PSScriptRoot 'installer.nsi')
+& $makensis /V2 "/DVERSION=$version" "/DNUMERIC_VERSION=$numericVersion" "/DSOURCE_DIR=$packageDir" "/DICON=$(Join-Path $repoRoot 'src-tauri\icons\icon.ico')" "/DOUTFILE=$installerPath" (Join-Path $PSScriptRoot 'installer.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'Installer build failed.' }
 Write-Host "Native installer: $installerPath"

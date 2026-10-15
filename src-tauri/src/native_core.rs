@@ -1,5 +1,6 @@
 //! App state and actions shared by the native window and global shortcuts.
 use crate::app::{self as native_app, AppHandle};
+use crate::whisper_local::AccelerationBackend;
 use crate::{native_audio, native_data, subtitle::SrtEntry};
 use base64::Engine;
 use serde_json::{json, Value};
@@ -152,7 +153,10 @@ pub fn initialize(app: AppHandle) -> Result<(), String> {
         .unwrap_or("groq")
         .to_owned();
     settings.insert("transcriptionMode".into(), json!(mode));
-    settings.insert("whisperAcceleration".into(), json!("vulkan"));
+    settings.insert(
+        "whisperAcceleration".into(),
+        json!(AccelerationBackend::parse(None).as_str()),
+    );
     // A saved hotkey means the app was already set up (including by the Tauri
     // build), so only new installs open the setup guide. Test and benchmark
     // profiles are new too, but measure the app itself.
@@ -167,7 +171,10 @@ pub fn initialize(app: AppHandle) -> Result<(), String> {
     settings.insert(crate::native_onboarding::KEY.into(), onboarding.clone());
     store.update_and_save(|values| {
         values.insert("transcriptionMode".into(), json!(mode));
-        values.insert("whisperAcceleration".into(), json!("vulkan"));
+        values.insert(
+            "whisperAcceleration".into(),
+            json!(AccelerationBackend::parse(None).as_str()),
+        );
         values.insert(crate::native_onboarding::KEY.into(), onboarding);
     })?;
     let data = native_data::Store::open(&directory)?;
@@ -563,7 +570,7 @@ impl Core {
                     _ => "azureMaiEndpoint",
                 };
                 let value = if id == "acceleration-select" {
-                    "vulkan".into()
+                    AccelerationBackend::parse(None).as_str().into()
                 } else if id == "mode-select"
                     && !matches!(value.as_str(), "groq" | "azure-mai" | "local")
                 {
@@ -718,7 +725,11 @@ impl Core {
             }
             "whisper-load-btn" => {
                 let _operation = self.whisper_operation.lock().await;
-                crate::load_whisper_model(app, Some("vulkan".into())).await?;
+                crate::load_whisper_model(
+                    app,
+                    Some(AccelerationBackend::parse(None).as_str().into()),
+                )
+                .await?;
                 "whisper-loaded"
             }
             "gec-download-btn" => {
@@ -746,7 +757,11 @@ impl Core {
                 };
                 if engine == "local" {
                     let _operation = self.whisper_operation.lock().await;
-                    crate::load_whisper_model(app.clone(), Some("vulkan".into())).await?;
+                    crate::load_whisper_model(
+                        app.clone(),
+                        Some(AccelerationBackend::parse(None).as_str().into()),
+                    )
+                    .await?;
                     self.refresh_model_state();
                 }
                 let key = s
@@ -991,9 +1006,12 @@ impl Core {
                     let _operation = core.whisper_operation.lock().await;
                     if core.mode() == "local"
                         && crate::check_whisper_model(core.app.clone()).unwrap_or(false)
-                        && crate::load_whisper_model(core.app.clone(), Some("vulkan".into()))
-                            .await
-                            .is_ok()
+                        && crate::load_whisper_model(
+                            core.app.clone(),
+                            Some(AccelerationBackend::parse(None).as_str().into()),
+                        )
+                        .await
+                        .is_ok()
                     {
                         core.refresh_model_state();
                     }
@@ -1089,7 +1107,11 @@ impl Core {
                 if !self.current_recording(generation) {
                     return Ok(String::new());
                 }
-                crate::load_whisper_model(self.app.clone(), Some("vulkan".into())).await?;
+                crate::load_whisper_model(
+                    self.app.clone(),
+                    Some(AccelerationBackend::parse(None).as_str().into()),
+                )
+                .await?;
                 self.refresh_model_state();
                 crate::transcribe_audio_local(audio, config.prompt, config.language).await
             }
@@ -1231,7 +1253,11 @@ mod tests {
     fn native_output_preserves_the_existing_unicode_and_newline_rules() {
         assert_eq!(
             normalize_output("Cafe\u{301}\u{a0}hello\u{200b}\nworld"),
-            "Café hello\r\nworld"
+            if cfg!(target_os = "macos") {
+                "Café hello\nworld"
+            } else {
+                "Café hello\r\nworld"
+            }
         );
     }
 
