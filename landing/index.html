@@ -30,7 +30,7 @@
     <div class="container">
       <div class="hero-badge">
         <span class="hero-badge-dot"></span>
-        Built with Win32 &amp; Whisper AI
+        Built with Tauri &amp; Whisper AI
       </div>
 
       <h1>Voice to text,<br/><span class="highlight">instantly.</span></h1>
@@ -124,7 +124,7 @@
             <svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
           </div>
           <h3>Fully Offline</h3>
-          <p>Run Whisper AI locally with Vulkan acceleration. Local transcription keeps your audio on your machine.</p>
+          <p>Run Whisper AI locally with CUDA or Vulkan acceleration. Your audio never leaves your machine — complete privacy by design.</p>
         </div>
         <!-- Feature 3 -->
         <div class="feature-card">
@@ -193,18 +193,18 @@
     <div class="reveal" style="text-align:center;">
       <p class="section-label">Transcription Engines</p>
       <h2 class="section-title">Choose how you transcribe.</h2>
-      <p class="section-desc" style="margin: 0 auto;">Three transcription engines. Switch tabs to compare specs.</p>
+      <p class="section-desc" style="margin: 0 auto;">One engine card, three modes. Switch tabs to compare specs.</p>
     </div>
     <div class="engine-tabs-card reveal" id="engineTabs">
       <div class="engine-tablist" role="tablist" aria-label="Engine modes">
-        <button class="engine-tab active" role="tab" aria-selected="true" aria-controls="engine-panel-azure" id="engine-tab-azure" data-target="engine-panel-azure">Azure</button>
-        <button class="engine-tab" role="tab" aria-selected="false" aria-controls="engine-panel-cloud" id="engine-tab-cloud" data-target="engine-panel-cloud">Groq</button>
+        <button class="engine-tab active" role="tab" aria-selected="true" aria-controls="engine-panel-web" id="engine-tab-web" data-target="engine-panel-web">Built-in</button>
+        <button class="engine-tab" role="tab" aria-selected="false" aria-controls="engine-panel-cloud" id="engine-tab-cloud" data-target="engine-panel-cloud">Cloud</button>
         <button class="engine-tab" role="tab" aria-selected="false" aria-controls="engine-panel-local" id="engine-tab-local" data-target="engine-panel-local">Offline</button>
       </div>
-      <article class="engine-panel active" role="tabpanel" id="engine-panel-azure" aria-labelledby="engine-tab-azure">
-        <span class="engine-tag">Cloud</span>
-        <h3 class="engine-name">Azure MAI-Transcribe</h3>
-        <p>Cloud transcription through your Azure Foundry endpoint. Configure the endpoint and API key in Settings.</p>
+      <article class="engine-panel active" role="tabpanel" id="engine-panel-web" aria-labelledby="engine-tab-web">
+        <span class="engine-tag">Built-in</span>
+        <h3 class="engine-name">Web Speech</h3>
+        <p>Uses your system's built-in speech recognition. Zero setup, works instantly - perfect for quick notes.</p>
         <div class="req-meter">
           <span class="on"></span><span></span><span></span><span></span><span></span>
         </div>
@@ -346,7 +346,7 @@
   <!-- ─── Footer ─── -->
   <footer class="footer">
     <div class="container">
-      <p>&copy; 2026 Annotate. Built with Win32 &amp; <a href="https://github.com/ggerganov/whisper.cpp" target="_blank" rel="noopener">whisper.cpp</a></p>
+      <p>&copy; 2026 Annotate. Built with <a href="https://tauri.app" target="_blank" rel="noopener">Tauri</a> &amp; <a href="https://github.com/ggerganov/whisper.cpp" target="_blank" rel="noopener">whisper.cpp</a></p>
     </div>
   </footer>
 

@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .pill {
+      width: 72px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: rgb(18, 18, 18);
+      border-radius: 16px;
+    }
+
+    .dots { display: contents; }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      background: rgba(255, 255, 255, 0.85);
+      border-radius: 50%;
+      transition: transform 0.08s ease-out, border-radius 0.08s ease-out;
+      will-change: transform;
+    }
+
+    /* ── Confirmation mode ───────────────────────────── */
+    body.confirm .pill {
+      gap: 6px;
+      padding: 0 12px;
+      width: auto;
+      max-width: 240px;
+    }
+    body.confirm .dots { display: none; }
+
+    .confirm-content {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      line-height: 16px;
+      min-width: 0;
+      white-space: nowrap;
+    }
+    body.confirm .confirm-content { display: flex; }
+
+    .confirm-icon {
+      flex: 0 0 auto;
+      width: 14px;
+      height: 14px;
+      display: block;
+    }
+    .confirm-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      line-height: 16px;
+      max-width: 180px;
+    }
+
+    /* Added (success) — green */
+    body.confirm.added .confirm-icon { color: #4ade80; }
+    /* Duplicate — amber */
+    body.confirm.duplicate .confirm-icon { color: #fbbf24; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dot { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="pill">
+    <div class="dots">
+      <div class="dot" id="d0"></div>
+      <div class="dot" id="d1"></div>
+      <div class="dot" id="d2"></div>
+      <div class="dot" id="d3"></div>
+    </div>
+    <div class="confirm-content">
+      <svg class="confirm-icon" id="confirm-icon" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="20 6 9 17 4 12"></polyline>
+      </svg>
+      <span class="confirm-text" id="confirm-text"></span>
+    </div>
+  </div>
+
+  <script>
+    const dots = [
+      document.getElementById('d0'),
+      document.getElementById('d1'),
+      document.getElementById('d2'),
+      document.getElementById('d3'),
+    ];
+    const confirmIcon = document.getElementById('confirm-icon');
+    const confirmText = document.getElementById('confirm-text');
+
+    let audioCtx = null;
+    let source = null;
+    let analyser = null;
+    let dataArray = null;
+    let stream = null;
+    let animId = null;
+    let audioGeneration = 0;
+    // True while showing an "added / duplicate" confirmation instead of the
+    // listening animation. The mic pipeline is torn down in this mode.
+    let confirmMode = false;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    // Phase offsets for each dot so they move in a wave
+    const offsets = [0, 0.8, 1.6, 2.4];
+
+    // SVG path markup for each confirmation kind.
+    const CONFIRM_ICONS = {
+      // Checkmark
+      added: '<polyline points="20 6 9 17 4 12"></polyline>',
+      // Circle with a horizontal dash ("already there")
+      duplicate: '<circle cx="12" cy="12" r="9"></circle><line x1="8" y1="12" x2="16" y2="12"></line>',
+    };
+
+    // Enter confirmation mode: stop the mic animation and show icon + word.
+    function showConfirmation(kind, text) {
+      confirmMode = true;
+      stopAudio();
+      resetDots();
+      const safeKind = kind === 'duplicate' ? 'duplicate' : 'added';
+      confirmIcon.innerHTML = CONFIRM_ICONS[safeKind];
+      confirmText.textContent = text || '';
+      document.body.classList.remove('added', 'duplicate');
+      document.body.classList.add('confirm', safeKind);
+    }
+
+    // Leave confirmation mode and return to the normal listening pill.
+    function clearConfirmation() {
+      confirmMode = false;
+      document.body.classList.remove('confirm', 'added', 'duplicate');
+      confirmText.textContent = '';
+    }
+
+    function showListening() {
+      clearConfirmation();
+      if (document.visibilityState === 'visible') startListening();
+    }
+
+    function resetDots() {
+      dots.forEach(dot => {
+        dot.style.transform = 'none';
+        dot.style.borderRadius = '50%';
+      });
+    }
+
+    // Tear down the current audio pipeline fully.
+    async function releaseAudio() {
+      if (animId) { cancelAnimationFrame(animId); animId = null; }
+      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+      if (source) { try { source.disconnect(); } catch {} source = null; }
+      const context = audioCtx;
+      audioCtx = null;
+      analyser = null;
+      dataArray = null;
+      if (context) { try { await context.close(); } catch {} }
+    }
+
+    function stopAudio() {
+      audioGeneration++;
+      releaseAudio();
+    }
+
+    // Acquire a FRESH stream (picks up current process default device)
+    async function startListening() {
+      // Never start the mic pipeline while showing a confirmation.
+      if (confirmMode) return;
+      const generation = ++audioGeneration;
+      await releaseAudio();
+      if (confirmMode || generation !== audioGeneration || document.visibilityState !== 'visible') return;
+      if (reduceMotion.matches) {
+        resetDots();
+        return;
+      }
+
+      let nextStream = null;
+      let nextContext = null;
+      try {
+        // No deviceId — deliberately asks for the process default,
+        // which is managed by Windows audio policy in the Rust backend
+        nextStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (generation !== audioGeneration || document.visibilityState !== 'visible') {
+          nextStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+
+        nextContext = new AudioContext();
+        const nextSource = nextContext.createMediaStreamSource(nextStream);
+        const nextAnalyser = nextContext.createAnalyser();
+        nextAnalyser.fftSize = 256;
+        nextAnalyser.smoothingTimeConstant = 0.6;
+        nextSource.connect(nextAnalyser);
+
+        stream = nextStream;
+        audioCtx = nextContext;
+        source = nextSource;
+        analyser = nextAnalyser;
+        nextStream = null;
+        nextContext = null;
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        animate(generation);
+      } catch (e) {
+        if (nextStream) nextStream.getTracks().forEach(t => t.stop());
+        if (nextContext) { try { await nextContext.close(); } catch {} }
+        if (generation === audioGeneration) await releaseAudio();
+        // Fallback: just do idle animation
+        if (generation === audioGeneration && document.visibilityState === 'visible') {
+          animateIdle(generation);
+        }
+      }
+    }
+
+    function getEnergy() {
+      analyser.getByteFrequencyData(dataArray);
+      let sum = 0;
+      // Focus on speech frequencies (first ~40 bins ≈ 0-3kHz)
+      const bins = Math.min(40, dataArray.length);
+      for (let i = 0; i < bins; i++) {
+        sum += dataArray[i];
+      }
+      return sum / (bins * 255); // 0..1
+    }
+
+    function animate(generation) {
+      if (generation !== audioGeneration || document.visibilityState !== 'visible' || !analyser) return;
+
+      const energy = getEnergy();
+      const t = performance.now() / 1000;
+
+      dots.forEach((dot, i) => {
+        // Idle: gentle wave, Speaking: bigger bounce + stretch
+        const wave = Math.sin(t * 3.5 + offsets[i]);
+
+        // Bounce height: 1-3px idle, up to 8px when loud
+        const bounce = wave * (0.6 + energy * 2.0);
+
+        // Vertical stretch: 1x idle, up to 2.2x when loud
+        const stretch = 1 + energy * 1.8;
+
+        dot.style.transform = `translateY(${bounce}px) scaleY(${stretch})`;
+        dot.style.borderRadius = stretch > 1.15 ? '40%' : '50%';
+      });
+
+      animId = requestAnimationFrame(() => animate(generation));
+    }
+
+    function animateIdle(generation) {
+      if (generation !== audioGeneration || document.visibilityState !== 'visible') return;
+
+      const t = performance.now() / 1000;
+      dots.forEach((dot, i) => {
+        const wave = Math.sin(t * 2.5 + offsets[i]);
+        dot.style.transform = `translateY(${wave * 1.5}px)`;
+      });
+      animId = requestAnimationFrame(() => animateIdle(generation));
+    }
+
+    // Re-acquire the stream every time the window is made visible.
+    // This is the key fix: since device switching happens via Windows audio
+    // policy (not getUserMedia deviceId), we must call getUserMedia() fresh
+    // each time to pick up the current process default device.
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        // Only start the mic animation when not showing a confirmation.
+        if (!confirmMode) startListening();
+      } else {
+        stopAudio();
+        // Reset confirmation state once the window is hidden so the next
+        // show starts clean as a listening throbber.
+        clearConfirmation();
+      }
+    });
+
+    reduceMotion.addEventListener('change', () => {
+      if (document.visibilityState === 'visible' && !confirmMode) startListening();
+    });
+
+    // Listen for confirmation requests from the main window (e.g. a word was
+    // added to the dictionary via the global hotkey).
+    if (window.__TAURI__ && window.__TAURI__.event) {
+      window.__TAURI__.event.listen('throbber-confirm', (event) => {
+        const payload = event.payload || {};
+        showConfirmation(payload.kind, payload.text);
+      });
+      window.__TAURI__.event.listen('throbber-listen', () => {
+        showListening();
+      });
+    }
+
+    // Initial acquire in case the window is already visible when loaded
+    if (document.visibilityState === 'visible' && !confirmMode) {
+      startListening();
+    }
+  </script>
+</body>
+</html>

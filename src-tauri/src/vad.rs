@@ -128,6 +128,19 @@ pub fn ensure_loaded(data_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+pub fn is_loaded() -> bool {
+    VAD_SESSION.lock().ok().map_or(false, |g| g.is_some())
+}
+
+pub fn unload() {
+    if let Ok(mut guard) = VAD_SESSION.lock() {
+        if guard.is_some() {
+            *guard = None;
+            log::info!("[VAD] Model unloaded");
+        }
+    }
+}
+
 // ── Inference ──────────────────────────────────────────
 
 /// Detect speech segments in 16kHz mono PCM audio.

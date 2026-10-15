@@ -1,36 +1,33 @@
 mod audio;
+mod azure_stream;
 mod download;
-mod gec;
-mod google_auth;
-mod native_app;
-mod native_audio;
-mod native_benchmark;
-mod native_core;
-mod native_data;
-mod native_migrate;
-mod native_onboarding;
-mod native_picker;
-mod native_sync;
-mod native_ui;
-pub mod subtitle;
-mod summary;
-mod throbber;
 mod transcribe;
-mod vad;
 mod whisper_local;
+mod google_auth;
+mod gec;
+mod vad;
+mod summary;
+pub mod subtitle;
 
-use audio::enumerate_capture_devices;
-use native_app::AppHandle;
+use audio::{enumerate_capture_devices, apply_device_override};
+#[cfg(not(target_os = "windows"))]
+use enigo::{Enigo, Keyboard, Settings};
 use serde::Serialize;
+use std::collections::HashMap;
 #[cfg(target_os = "windows")]
 use std::ptr::null_mut;
+#[cfg(not(target_os = "windows"))]
+use std::sync::LazyLock;
+use std::sync::Mutex;
 use std::time::Instant;
+use tauri::{AppHandle, Emitter, Manager};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::{
-    Foundation::GlobalFree,
     System::{
         DataExchange::{
-            CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData,
+            CloseClipboard, EmptyClipboard, GetClipboardData,
+            OpenClipboard, SetClipboardData,
         },
         Memory::{GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE},
     },
@@ -43,6 +40,12 @@ use windows_sys::Win32::{
 #[cfg(target_os = "windows")]
 const CF_UNICODETEXT_FORMAT: u32 = 13;
 
+/// Shared Enigo instance — creating one per paste leaks Win32 input hooks and COM state.
+#[cfg(not(target_os = "windows"))]
+static ENIGO: LazyLock<Mutex<Enigo>> = LazyLock::new(|| {
+    Mutex::new(Enigo::new(&Settings::default()).expect("Failed to create Enigo"))
+});
+
 #[derive(Serialize, Clone)]
 pub struct AudioDevice {
     pub id: String,
@@ -50,11 +53,20 @@ pub struct AudioDevice {
 }
 
 /// List all audio capture devices
+#[tauri::command]
 fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
     enumerate_capture_devices().map_err(|e| format!("Failed to enumerate devices: {}", e))
 }
 
+/// Set the audio capture device for this process and its WebView2 children
+#[tauri::command]
+fn set_audio_device(device_id: String) -> Result<(), String> {
+    log::info!("set_audio_device called with id='{}'", device_id);
+    apply_device_override(&device_id)
+}
+
 /// Transcribe audio using Groq Whisper API
+#[tauri::command]
 async fn transcribe_audio(
     audio_base64: String,
     api_key: String,
@@ -67,11 +79,12 @@ async fn transcribe_audio(
         initial_prompt.as_deref(),
         language.as_deref(),
     )
-    .await
-    .map_err(|e| format!("Transcription failed: {}", e))
+        .await
+        .map_err(|e| format!("Transcription failed: {}", e))
 }
 
 /// Transcribe audio using Microsoft MAI-Transcribe through Azure Speech in Foundry Tools.
+#[tauri::command]
 async fn transcribe_audio_azure(
     audio_base64: String,
     api_key: String,
@@ -91,10 +104,39 @@ async fn transcribe_audio_azure(
 }
 
 /// Warm the shared Azure HTTP/2 connection before the REST upload is ready.
+#[tauri::command]
 async fn warm_azure_transcription(endpoint: String) -> Result<(), String> {
     transcribe::warm_azure_connection(&endpoint)
         .await
         .map_err(|e| format!("Azure connection warm-up failed: {}", e))
+}
+
+/// Start an experimental Voice Live session for streaming MAI transcription.
+#[tauri::command]
+async fn azure_stream_start(
+    endpoint: String,
+    api_key: String,
+    language: Option<String>,
+) -> Result<(), String> {
+    azure_stream::start(&endpoint, &api_key, language.as_deref()).await
+}
+
+/// Append a base64-encoded PCM16 chunk to the active Voice Live session.
+#[tauri::command]
+async fn azure_stream_send(audio_base64: String) -> Result<(), String> {
+    azure_stream::send_audio(&audio_base64).await
+}
+
+/// Commit streamed audio and wait for the completed transcript.
+#[tauri::command]
+async fn azure_stream_finish() -> Result<String, String> {
+    azure_stream::finish().await
+}
+
+/// Cancel and close an active Voice Live session.
+#[tauri::command]
+async fn azure_stream_cancel() {
+    azure_stream::cancel().await;
 }
 
 // ── API Key — Windows Credential Manager ─────────────
@@ -106,16 +148,17 @@ const OPENROUTER_CREDENTIAL_USER: &str = "OpenRouterApiKey";
 
 /// Save the Groq API key to Windows Credential Manager.
 /// The key is never written to disk in plaintext.
+#[tauri::command]
 fn save_api_key(key: String) -> Result<(), String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, GROQ_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
-    entry
-        .set_password(&key)
+    entry.set_password(&key)
         .map_err(|e| format!("Failed to save credential: {}", e))
 }
 
 /// Load the Groq API key from Windows Credential Manager.
 /// Returns None if no key has been saved yet.
+#[tauri::command]
 fn load_api_key() -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, GROQ_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
@@ -127,15 +170,16 @@ fn load_api_key() -> Result<Option<String>, String> {
 }
 
 /// Save the Azure Foundry API key to Windows Credential Manager.
+#[tauri::command]
 fn save_azure_api_key(key: String) -> Result<(), String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, AZURE_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
-    entry
-        .set_password(&key)
+    entry.set_password(&key)
         .map_err(|e| format!("Failed to save credential: {}", e))
 }
 
 /// Load the Azure Foundry API key from Windows Credential Manager.
+#[tauri::command]
 fn load_azure_api_key() -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, AZURE_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
@@ -148,6 +192,7 @@ fn load_azure_api_key() -> Result<Option<String>, String> {
 
 /// Save the OpenRouter API key to Windows Credential Manager.
 /// Empty input clears the saved credential.
+#[tauri::command]
 fn save_openrouter_api_key(key: String) -> Result<(), String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, OPENROUTER_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
@@ -165,6 +210,7 @@ fn save_openrouter_api_key(key: String) -> Result<(), String> {
 }
 
 /// Load the OpenRouter API key from Windows Credential Manager.
+#[tauri::command]
 fn load_openrouter_api_key() -> Result<Option<String>, String> {
     let entry = keyring::Entry::new(CREDENTIAL_SERVICE, OPENROUTER_CREDENTIAL_USER)
         .map_err(|e| format!("Credential entry error: {}", e))?;
@@ -178,102 +224,99 @@ fn load_openrouter_api_key() -> Result<Option<String>, String> {
 // ── Local Whisper Commands ─────────────────────────────
 
 /// Check if the whisper model file exists on disk
+#[tauri::command]
 fn check_whisper_model(app: AppHandle) -> Result<bool, String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     Ok(whisper_local::is_model_downloaded(&data_dir))
 }
 
-/// Download the whisper model file, emitting progress events. Resumes a paused
-/// download; fails with `download::DOWNLOAD_CANCELLED` when paused.
+/// Get the model file path (for display in the UI)
+#[tauri::command]
+fn get_whisper_model_path(app: AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
+    Ok(whisper_local::model_path(&data_dir).to_string_lossy().to_string())
+}
+
+/// Download the whisper model file, emitting progress events
+#[tauri::command]
 async fn download_whisper_model(app: AppHandle) -> Result<(), String> {
-    let guard = whisper_local::MODEL_DOWNLOAD.begin()?;
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
-    whisper_local::download_model(
-        &data_dir,
-        throttled_progress(app, "whisper-download-progress"),
-        guard.token(),
-    )
+    let app_handle = app.clone();
+    whisper_local::download_model(&data_dir, move |downloaded, total| {
+        let _ = app_handle.emit("whisper-download-progress", (downloaded, total));
+    })
     .await
-    .map_err(|e| {
-        if download::is_cancelled(e.as_ref()) {
-            download::DOWNLOAD_CANCELLED.to_owned()
-        } else {
-            format!("Download failed: {e}")
-        }
-    })?;
+    .map_err(|e| format!("Download failed: {}", e))?;
     Ok(())
 }
 
-/// Pause the model download, keeping the partial file. Returns false when idle.
-fn cancel_whisper_model_download() -> bool {
-    whisper_local::MODEL_DOWNLOAD.cancel()
-}
-
-/// Bytes of a paused model download, if any.
-fn partial_whisper_model_bytes(app: AppHandle) -> u64 {
-    app.path()
-        .app_local_data_dir()
-        .map(|dir| whisper_local::partial_model_bytes(&dir))
-        .unwrap_or(0)
-}
-
-/// Each progress event repaints the window, so report at most once per MiB.
-fn throttled_progress(app: AppHandle, event: &'static str) -> impl Fn(u64, u64) + Send + 'static {
-    const STEP: u64 = 1024 * 1024;
-    let last = std::sync::atomic::AtomicU64::new(u64::MAX);
-    move |downloaded, total| {
-        let previous = last.load(std::sync::atomic::Ordering::Relaxed);
-        if previous == u64::MAX
-            || downloaded < previous
-            || downloaded >= previous + STEP
-            || downloaded == total
-        {
-            last.store(downloaded, std::sync::atomic::Ordering::Relaxed);
-            let _ = app.emit(event, (downloaded, total));
-        }
-    }
-}
-
 /// Load the whisper model — spawns worker process and loads model.
-/// The Vulkan worker owns GPU resources until the model is unloaded.
-async fn load_whisper_model(app: AppHandle, acceleration: Option<String>) -> Result<(), String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+///
+/// `acceleration` selects the sidecar backend: `"cuda"` (default) or `"vulkan"`.
+#[tauri::command]
+async fn load_whisper_model(
+    app: AppHandle,
+    acceleration: Option<String>,
+) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     let backend = whisper_local::AccelerationBackend::parse(acceleration.as_deref());
     whisper_local::ensure_loaded(&data_dir, backend).await
 }
 
 /// Unload the whisper model — kills worker process, freeing all GPU memory
+#[tauri::command]
 async fn unload_whisper_model() -> Result<(), String> {
     whisper_local::unload().await;
     Ok(())
 }
 
+/// Report which acceleration backend is currently loaded (if any).
+#[tauri::command]
+fn get_whisper_backend() -> Result<Option<String>, String> {
+    Ok(whisper_local::loaded_backend().map(|b| b.as_str().to_string()))
+}
+
 /// Transcribe audio locally via the worker process
+#[tauri::command]
 async fn transcribe_audio_local(
     audio_base64: String,
     initial_prompt: Option<String>,
-    language: Option<String>,
 ) -> Result<String, String> {
-    whisper_local::transcribe_pcm_b64(
-        &audio_base64,
-        initial_prompt.as_deref(),
-        language.as_deref(),
-    )
-    .await
+    whisper_local::transcribe_pcm_b64(&audio_base64, initial_prompt.as_deref()).await
 }
 
 // ── GEC (Grammar Correction) Commands ──────────────────
 
 /// Check if the GEC model files exist on disk
+#[tauri::command]
 fn check_gec_model(app: AppHandle) -> Result<bool, String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     Ok(gec::is_model_downloaded(&data_dir))
 }
 
 /// Download the GEC model bundle, emitting progress events
+#[tauri::command]
 async fn download_gec_model(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let app_handle = app.clone();
     gec::download_model(&data_dir, move |downloaded, total| {
@@ -285,14 +328,19 @@ async fn download_gec_model(app: AppHandle) -> Result<(), String> {
 }
 
 /// Load the GEC model into memory
+#[tauri::command]
 async fn load_gec_model(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     tokio::task::spawn_blocking(move || gec::ensure_loaded(&data_dir))
         .await
         .map_err(|e| format!("Join error: {}", e))?
 }
 
 /// Correct grammar in the given text
+#[tauri::command]
 async fn correct_grammar(text: String) -> Result<String, String> {
     let total_start = Instant::now();
     let input_chars = text.chars().count();
@@ -306,8 +354,8 @@ async fn correct_grammar(text: String) -> Result<String, String> {
         );
         result
     })
-    .await
-    .map_err(|e| format!("Join error: {}", e))?;
+        .await
+        .map_err(|e| format!("Join error: {}", e))?;
 
     match &result {
         Ok(corrected) => log::info!(
@@ -326,6 +374,7 @@ async fn correct_grammar(text: String) -> Result<String, String> {
 }
 
 /// Unload the GEC model from memory
+#[tauri::command]
 async fn unload_gec_model() -> Result<(), String> {
     tokio::task::spawn_blocking(|| {
         gec::unload();
@@ -338,14 +387,22 @@ async fn unload_gec_model() -> Result<(), String> {
 // ── Subtitle Commands ──────────────────────────────────
 
 /// Check if FFmpeg is available
+#[tauri::command]
 fn check_ffmpeg(app: AppHandle) -> Result<bool, String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     Ok(subtitle::is_ffmpeg_available(&data_dir))
 }
 
 /// Download FFmpeg, emitting progress events
+#[tauri::command]
 async fn download_ffmpeg(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     let app_handle = app.clone();
     subtitle::ensure_ffmpeg(&data_dir, move |downloaded, total| {
         let _ = app_handle.emit("ffmpeg-download-progress", (downloaded, total));
@@ -355,14 +412,22 @@ async fn download_ffmpeg(app: AppHandle) -> Result<(), String> {
 }
 
 /// Check if the VAD model is downloaded
+#[tauri::command]
 fn check_vad_model(app: AppHandle) -> Result<bool, String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     Ok(vad::is_model_downloaded(&data_dir))
 }
 
 /// Download the VAD model, emitting progress events
+#[tauri::command]
 async fn download_vad_model(app: AppHandle) -> Result<(), String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
     let app_handle = app.clone();
     vad::download_model(&data_dir, move |downloaded, total| {
@@ -374,6 +439,7 @@ async fn download_vad_model(app: AppHandle) -> Result<(), String> {
 
 /// Generate subtitles from an audio/video file.
 /// Emits 'subtitle-progress' events during processing.
+#[tauri::command]
 async fn generate_subtitles(
     app: AppHandle,
     file_path: String,
@@ -383,7 +449,10 @@ async fn generate_subtitles(
     prompt: Option<String>,
     language: Option<String>,
 ) -> Result<Vec<subtitle::SrtEntry>, String> {
-    let data_dir = app.path().app_local_data_dir().map_err(|e| e.to_string())?;
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?;
 
     let app_handle = app.clone();
     subtitle::generate_subtitles(
@@ -402,13 +471,21 @@ async fn generate_subtitles(
 }
 
 /// Save SRT entries to a file.
+#[tauri::command]
 fn save_srt_file(entries: Vec<subtitle::SrtEntry>, output_path: String) -> Result<(), String> {
     let srt_content = subtitle::format_srt(&entries);
     std::fs::write(&output_path, srt_content)
         .map_err(|e| format!("Failed to write SRT file: {}", e))
 }
 
+/// Get the SRT text content from entries (for preview).
+#[tauri::command]
+fn format_srt_preview(entries: Vec<subtitle::SrtEntry>) -> String {
+    subtitle::format_srt(&entries)
+}
+
 /// Summarize subtitle entries with OpenRouter GPT-5.4 Mini.
+#[tauri::command]
 async fn summarize_subtitles(entries: Vec<subtitle::SrtEntry>) -> Result<String, String> {
     let api_key = load_openrouter_api_key()?
         .ok_or_else(|| "OpenRouter API key not configured. Add it in Settings.".to_string())?;
@@ -418,7 +495,56 @@ async fn summarize_subtitles(entries: Vec<subtitle::SrtEntry>) -> Result<String,
         .map_err(|e| format!("Subtitle summary failed: {}", e))
 }
 
+// ── CUDA Runtime Commands ──────────────────────────────
+
+/// Check if CUDA runtime DLLs are available.
+/// Returns: { available: bool, missing: ["name.dll", ...], has_toolkit: bool }
+#[tauri::command]
+fn check_cuda_runtime() -> Result<serde_json::Value, String> {
+    let missing = whisper_local::missing_cuda_dlls();
+    let available = missing.is_empty();
+    let has_toolkit = std::env::var("CUDA_PATH").is_ok();
+
+    // If DLLs are missing but toolkit is installed, try copying automatically
+    if !available && has_toolkit {
+        match whisper_local::copy_cuda_from_toolkit() {
+            Ok(count) => {
+                log::info!("[CUDA] Copied {} DLLs from toolkit", count);
+                let still_missing = whisper_local::missing_cuda_dlls();
+                return Ok(serde_json::json!({
+                    "available": still_missing.is_empty(),
+                    "missing": still_missing,
+                    "has_toolkit": true,
+                    "copied_from_toolkit": count
+                }));
+            }
+            Err(e) => {
+                log::warn!("[CUDA] Could not copy from toolkit: {}", e);
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "available": available,
+        "missing": missing,
+        "has_toolkit": has_toolkit
+    }))
+}
+
+/// Download CUDA runtime DLLs from NVIDIA's redistribution CDN
+#[tauri::command]
+async fn download_cuda_runtime(app: AppHandle) -> Result<(), String> {
+    let app_handle = app.clone();
+    whisper_local::download_cuda_runtime(move |downloaded, total| {
+        let _ = app_handle.emit("cuda-download-progress", (downloaded, total));
+    })
+    .await
+    .map_err(|e| format!("CUDA download failed: {}", e))?;
+    Ok(())
+}
+
 /// Paste text by writing to clipboard and simulating Ctrl+V
+#[tauri::command]
 fn paste_text(text: String, release_delay_ms: Option<u64>) -> Result<(), String> {
     let total_start = Instant::now();
     let chars = text.chars().count();
@@ -485,8 +611,14 @@ fn paste_text_impl(text: &str) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 fn paste_text_impl(text: &str) -> Result<(), String> {
-    let _ = text;
-    Err("Pasting text is only supported on Windows".into())
+    let mut enigo = ENIGO
+        .lock()
+        .map_err(|e| format!("Enigo lock poisoned: {}", e))?;
+
+    enigo.text(text)
+        .map_err(|e| format!("Failed to type text: {}", e))?;
+
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -495,17 +627,7 @@ struct ClipboardGuard;
 #[cfg(target_os = "windows")]
 impl ClipboardGuard {
     fn open() -> Result<Self, String> {
-        Self::open_with_owner(null_mut())
-    }
-
-    fn open_for_write() -> Result<Self, String> {
-        let owner = native_app::clipboard_owner()
-            .ok_or_else(|| "The clipboard runtime is not running".to_string())?;
-        Self::open_with_owner(owner.0)
-    }
-
-    fn open_with_owner(owner: *mut std::ffi::c_void) -> Result<Self, String> {
-        let opened = unsafe { OpenClipboard(owner) };
+        let opened = unsafe { OpenClipboard(null_mut()) };
         if opened == 0 {
             return Err("Failed to open clipboard".to_string());
         }
@@ -529,7 +651,7 @@ fn set_clipboard_unicode_text(text: &str) -> Result<(), String> {
         bytes.extend_from_slice(&unit.to_le_bytes());
     }
 
-    let _guard = ClipboardGuard::open_for_write()?;
+    let _guard = ClipboardGuard::open()?;
     if unsafe { EmptyClipboard() } == 0 {
         return Err("Failed to empty clipboard".to_string());
     }
@@ -540,25 +662,17 @@ fn set_clipboard_unicode_text(text: &str) -> Result<(), String> {
 fn write_clipboard_format(format: u32, data: &[u8]) -> Result<(), String> {
     let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len()) };
     if handle.is_null() {
-        return Err(format!(
-            "Failed to allocate clipboard memory for format {}",
-            format
-        ));
+        return Err(format!("Failed to allocate clipboard memory for format {}", format));
     }
     let ptr = unsafe { GlobalLock(handle) };
     if ptr.is_null() {
-        unsafe { GlobalFree(handle) };
-        return Err(format!(
-            "Failed to lock clipboard memory for format {}",
-            format
-        ));
+        return Err(format!("Failed to lock clipboard memory for format {}", format));
     }
     unsafe {
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         GlobalUnlock(handle);
     }
     if unsafe { SetClipboardData(format, handle) }.is_null() {
-        unsafe { GlobalFree(handle) };
         return Err(format!("Failed to set clipboard format {}", format));
     }
     Ok(())
@@ -567,11 +681,6 @@ fn write_clipboard_format(format: u32, data: &[u8]) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn read_clipboard_unicode_text() -> Result<Option<String>, String> {
     let _guard = ClipboardGuard::open()?;
-    read_open_clipboard_unicode_text()
-}
-
-#[cfg(target_os = "windows")]
-fn read_open_clipboard_unicode_text() -> Result<Option<String>, String> {
     let handle = unsafe { GetClipboardData(CF_UNICODETEXT_FORMAT) };
     if handle.is_null() {
         return Ok(None);
@@ -599,14 +708,12 @@ fn read_open_clipboard_unicode_text() -> Result<Option<String>, String> {
 
 #[cfg(target_os = "windows")]
 fn clear_injected_clipboard_if_unchanged(injected_text: &str) -> Result<(), String> {
-    // Keep comparison and clearing under one open clipboard so another app's
-    // newer copy cannot replace the injected text between those operations.
-    let _guard = ClipboardGuard::open_for_write()?;
-    let current = read_open_clipboard_unicode_text()?;
+    let current = read_clipboard_unicode_text()?;
     if current.as_deref() != Some(injected_text) {
         return Ok(());
     }
 
+    let _guard = ClipboardGuard::open()?;
     if unsafe { EmptyClipboard() } == 0 {
         return Err("Failed to clear clipboard".to_string());
     }
@@ -667,12 +774,7 @@ fn send_ctrl_combo(vk: u16, label: &str) -> Result<(), String> {
         )
     };
     if sent != inputs.len() as u32 {
-        return Err(format!(
-            "Failed to send {}: sent {} of {}",
-            label,
-            sent,
-            inputs.len()
-        ));
+        return Err(format!("Failed to send {}: sent {} of {}", label, sent, inputs.len()));
     }
     Ok(())
 }
@@ -681,6 +783,7 @@ fn send_ctrl_combo(vk: u16, label: &str) -> Result<(), String> {
 /// Ctrl+C and reading the clipboard. Restores the prior clipboard text afterwards.
 /// Returns an empty string when nothing was copied (no selection).
 #[cfg(target_os = "windows")]
+#[tauri::command]
 fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String> {
     // Let the user's hotkey modifiers release so they don't mix into our Ctrl+C
     std::thread::sleep(std::time::Duration::from_millis(
@@ -727,6 +830,7 @@ fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String
 }
 
 #[cfg(not(target_os = "windows"))]
+#[tauri::command]
 fn capture_selected_text(release_delay_ms: Option<u64>) -> Result<String, String> {
     let _ = release_delay_ms;
     Err("Capturing selected text is only supported on Windows".to_string())
@@ -782,60 +886,274 @@ mod tests {
     }
 }
 
-fn register_hotkey(_app: AppHandle, shortcut_str: String) -> Result<(), String> {
-    native_app::register(0, &shortcut_str)
+/// Registered global hotkeys by slot name ("main", "dictionary", ...).
+/// Lets multiple features own independent shortcuts without clobbering each other.
+static HOTKEY_SLOTS: Mutex<Option<HashMap<String, Shortcut>>> = Mutex::new(None);
+
+/// Register a global hotkey for a named slot, emitting `{event_prefix}-down`/`-up` events.
+/// Re-registering a slot replaces only that slot's previous shortcut.
+fn register_hotkey_slot(
+    app: &AppHandle,
+    slot: &str,
+    shortcut_str: &str,
+    event_prefix: &'static str,
+) -> Result<(), String> {
+    let manager = app.global_shortcut();
+
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Invalid shortcut '{}': {}", shortcut_str, e))?;
+
+    let mut slots_guard = HOTKEY_SLOTS
+        .lock()
+        .map_err(|e| format!("Hotkey registry poisoned: {}", e))?;
+    let slots = slots_guard.get_or_insert_with(HashMap::new);
+
+    // Reject if another slot already uses this shortcut
+    if slots
+        .iter()
+        .any(|(name, existing)| name != slot && *existing == shortcut)
+    {
+        return Err(format!(
+            "Shortcut '{}' is already in use by another hotkey",
+            shortcut_str
+        ));
+    }
+
+    // Unregister this slot's previous shortcut, if any
+    if let Some(previous) = slots.remove(slot) {
+        if previous == shortcut {
+            // Same shortcut already bound to this slot — keep it as-is
+            slots.insert(slot.to_string(), shortcut);
+            return Ok(());
+        }
+        if let Err(e) = manager.unregister(previous) {
+            log::warn!("Failed to unregister previous '{}' hotkey: {}", slot, e);
+        }
+    }
+
+    let app_handle = app.clone();
+    manager
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
+            match event.state() {
+                ShortcutState::Pressed => {
+                    let _ = app_handle.emit(&format!("{}-down", event_prefix), ());
+                }
+                ShortcutState::Released => {
+                    let _ = app_handle.emit(&format!("{}-up", event_prefix), ());
+                }
+            }
+        })
+        .map_err(|e| format!("Failed to register shortcut: {}", e))?;
+
+    slots.insert(slot.to_string(), shortcut);
+    Ok(())
 }
-fn register_dict_hotkey(_app: AppHandle, shortcut_str: String) -> Result<(), String> {
-    native_app::register(1, &shortcut_str)
+
+/// Register the main push-to-talk hotkey (emits `hotkey-down`/`hotkey-up`)
+#[tauri::command]
+fn register_hotkey(app: AppHandle, shortcut_str: String) -> Result<(), String> {
+    register_hotkey_slot(&app, "main", &shortcut_str, "hotkey")
 }
+
+/// Register the "add selection to dictionary" hotkey (emits `dict-hotkey-down`/`dict-hotkey-up`)
+#[tauri::command]
+fn register_dict_hotkey(app: AppHandle, shortcut_str: String) -> Result<(), String> {
+    register_hotkey_slot(&app, "dictionary", &shortcut_str, "dict-hotkey")
+}
+
+/// Unregister the dictionary hotkey, if one is bound
+#[tauri::command]
+fn unregister_dict_hotkey(app: AppHandle) -> Result<(), String> {
+    let mut slots_guard = HOTKEY_SLOTS
+        .lock()
+        .map_err(|e| format!("Hotkey registry poisoned: {}", e))?;
+    if let Some(slots) = slots_guard.as_mut() {
+        if let Some(previous) = slots.remove("dictionary") {
+            app.global_shortcut()
+                .unregister(previous)
+                .map_err(|e| format!("Failed to unregister: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
+/// Show the throbber overlay window at bottom-center of the screen
+#[tauri::command]
+fn show_throbber(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("throbber") {
+        // Position at bottom-center of the primary monitor
+        if let Ok(Some(monitor)) = window.primary_monitor() {
+            let screen = monitor.size();
+            let mon_pos = monitor.position();
+            let scale = monitor.scale_factor();
+
+            // Get the window's actual physical size (may differ from config due to OS minimums)
+            let win_size = window.outer_size().unwrap_or(tauri::PhysicalSize::new(
+                (260.0 * scale) as u32,
+                (32.0 * scale) as u32,
+            ));
+            let margin_bottom = (60.0 * scale) as i32;
+
+            let x = mon_pos.x + (screen.width as i32 - win_size.width as i32) / 2;
+            let y = mon_pos.y + screen.height as i32 - win_size.height as i32 - margin_bottom;
+
+            use tauri::PhysicalPosition;
+            let _ = window.set_position(PhysicalPosition::new(x, y));
+        }
+        window.show().map_err(|e| format!("Failed to show throbber: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Hide the throbber overlay window
+#[tauri::command]
+fn hide_throbber(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("throbber") {
+        window.hide().map_err(|e| format!("Failed to hide throbber: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Hide main window to system tray
+#[tauri::command]
+fn hide_to_tray(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.hide().map_err(|e| format!("Failed to hide: {}", e))?;
+    }
+    Ok(())
+}
+
+/// Quit the app entirely
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let args: Vec<_> = std::env::args_os().collect();
-    if args.get(1).is_some_and(|s| s == "--capture-ui") {
-        let Some(directory) = args.get(2) else {
-            eprintln!("--capture-ui requires an output directory");
-            std::process::exit(1);
-        };
-        let directory = std::path::PathBuf::from(directory);
-        std::env::set_var("ANNOTATE_UI_TEST", "1");
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        std::env::set_var(
-            "ANNOTATE_DATA_DIR",
-            directory.join(format!("test-data-{}-{stamp}", std::process::id())),
-        );
-        let result = native_app::initialize_runtime()
-            .and_then(|_| native_core::initialize(native_app::AppHandle))
-            .and_then(|_| native_ui::capture_reference(&directory));
-        if let Err(error) = result {
-            eprintln!("Native UI capture: {error}");
-            std::process::exit(1);
-        }
-        return;
-    }
-    if args.get(1).is_some_and(|s| s == "--benchmark") {
-        let Some(directory) = args.get(2) else {
-            eprintln!("--benchmark requires a report directory");
-            std::process::exit(1);
-        };
-        let directory = std::path::PathBuf::from(directory);
-        std::env::set_var("ANNOTATE_UI_TEST", "1");
-        std::env::set_var("ANNOTATE_DATA_DIR", directory.join("data"));
-        if let Err(error) = native_benchmark::initialize(&directory) {
-            eprintln!("Benchmark: {error}");
-            std::process::exit(1);
-        }
-    }
-    if let Err(error) = native_app::run() {
-        eprintln!("Annotate: {error}");
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::MessageBoxW(
-                None,
-                &windows::core::HSTRING::from(error),
-                windows::core::w!("Annotate"),
-                windows::Win32::UI::WindowsAndMessaging::MB_ICONERROR,
-            );
-        }
-    }
+    // Start the WebView2 watcher thread BEFORE Tauri builder
+    // so it catches WebView2 child processes as they spawn
+    audio::apply_startup_override_and_watch();
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second instance was launched — show + focus the existing main window
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .build(),
+        )
+        .setup(|app| {
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
+
+            // Build system tray
+            use tauri::menu::{MenuBuilder, MenuItemBuilder};
+            use tauri::tray::TrayIconBuilder;
+
+            let show_item = MenuItemBuilder::with_id("show", "Show Annotate").build(app)?;
+            let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+
+            let menu = MenuBuilder::new(app)
+                .items(&[&show_item, &quit_item])
+                .build()?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Annotate")
+                .menu(&menu)
+                .on_menu_event(|app, event| {
+                    match event.id().as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        "quit" => {
+                            app.exit(0);
+                        }
+                        _ => {}
+                    }
+                })
+                .on_tray_icon_event(|tray, event| {
+                    use tauri::tray::{TrayIconEvent, MouseButton, MouseButtonState};
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_audio_devices,
+            set_audio_device,
+            transcribe_audio,
+            transcribe_audio_azure,
+            warm_azure_transcription,
+            azure_stream_start,
+            azure_stream_send,
+            azure_stream_finish,
+            azure_stream_cancel,
+            paste_text,
+            register_hotkey,
+            register_dict_hotkey,
+            unregister_dict_hotkey,
+            capture_selected_text,
+            show_throbber,
+            hide_throbber,
+            hide_to_tray,
+            quit_app,
+            save_api_key,
+            load_api_key,
+            save_azure_api_key,
+            load_azure_api_key,
+            save_openrouter_api_key,
+            load_openrouter_api_key,
+            check_whisper_model,
+            get_whisper_model_path,
+            download_whisper_model,
+            load_whisper_model,
+            get_whisper_backend,
+            transcribe_audio_local,
+            check_cuda_runtime,
+            download_cuda_runtime,
+            google_auth::google_oauth,
+            google_auth::google_refresh_access_token,
+            google_auth::has_google_refresh_token,
+            google_auth::migrate_google_refresh_token,
+            google_auth::clear_google_refresh_token,
+            google_auth::cancel_google_oauth,
+            check_gec_model,
+            download_gec_model,
+            load_gec_model,
+            unload_gec_model,
+            correct_grammar,
+            unload_whisper_model,
+            check_ffmpeg,
+            download_ffmpeg,
+            check_vad_model,
+            download_vad_model,
+            generate_subtitles,
+            save_srt_file,
+            format_srt_preview,
+            summarize_subtitles,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }

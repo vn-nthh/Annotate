@@ -1,4 +1,4 @@
-name: Release Annotate
+name: 'Release Annotate'
 
 on:
   push:
@@ -11,17 +11,14 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-latest
-    env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
     steps:
       - uses: actions/checkout@v4
 
-      # The runner context is unavailable in job-level env. MSVC needs a short
-      # path for the worker's CMake build, so set it from a step instead.
-      - name: Use a short worker build directory
-        shell: pwsh
-        run: |
-          "WHISPER_WORKER_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'w')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: 'npm'
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -31,6 +28,9 @@ jobs:
         with:
           workspaces: './src-tauri -> target'
 
+      - name: Install frontend dependencies
+        run: npm ci
+
       - name: Configure Google OAuth client
         shell: pwsh
         env:
@@ -39,66 +39,67 @@ jobs:
           if (-not $env:GOOGLE_OAUTH_CLIENT_ID) {
             throw 'Repository variable GOOGLE_OAUTH_CLIENT_ID is required for release builds.'
           }
-          $config = @{ client_id = $env:GOOGLE_OAUTH_CLIENT_ID } | ConvertTo-Json
-          [IO.File]::WriteAllText('src/oauth.config.json', $config, [Text.UTF8Encoding]::new($false))
+          @{ client_id = $env:GOOGLE_OAUTH_CLIENT_ID } |
+            ConvertTo-Json |
+            Set-Content -Encoding utf8 src/oauth.config.json
 
       - name: Install Vulkan SDK
         shell: pwsh
         run: |
-          $version = '1.4.350.0'
-          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
-          $sdkDir = Join-Path $env:RUNNER_TEMP 'vulkan-sdk'
-          Invoke-WebRequest -Uri "https://sdk.lunarg.com/sdk/download/$version/windows/vulkansdk-windows-X64-$version.exe" -OutFile $installer
-          if ((Get-AuthenticodeSignature -LiteralPath $installer).Status -ne 'Valid') {
-            throw 'Vulkan SDK installer signature is invalid.'
+          winget install --id KhronosGroup.VulkanSDK -e --accept-source-agreements --accept-package-agreements
+          $sdkRoot = 'C:\VulkanSDK'
+          if (-not (Test-Path $sdkRoot)) {
+            throw "Vulkan SDK install path not found: $sdkRoot"
           }
-          $process = Start-Process -FilePath $installer -ArgumentList @('--root', "`"$sdkDir`"", '--accept-licenses', '--default-answer', '--confirm-command', 'install') -WindowStyle Hidden -Wait -PassThru
-          if ($process.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $sdkDir 'Bin\glslc.exe'))) {
-            throw 'Vulkan SDK installation failed.'
+          $latest = Get-ChildItem -Path $sdkRoot -Directory | Sort-Object Name -Descending | Select-Object -First 1
+          if (-not $latest) {
+            throw 'No Vulkan SDK version directory found after install.'
           }
-          "VULKAN_SDK=$sdkDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VULKAN_SDK=$($latest.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "VULKAN_SDK=$($latest.FullName)"
 
-      - name: Build native app and Vulkan worker
-        shell: pwsh
-        run: ./scripts/build-native.ps1
-
-      - name: Test native behavior
-        run: cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml
-
-      - name: Install NSIS
+      - name: Ensure Whisper sidecars
         shell: pwsh
         run: |
-          if (-not (Get-Command makensis -ErrorAction SilentlyContinue) -and
-              -not (Test-Path -LiteralPath (Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'))) {
-            choco install nsis -y --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          $cudaSidecar = 'src-tauri\binaries\whisper-worker-x86_64-pc-windows-msvc.exe'
+          $vulkanSidecar = 'src-tauri\binaries\whisper-worker-vulkan-x86_64-pc-windows-msvc.exe'
+
+          if (Test-Path $cudaSidecar) {
+            Write-Host "Using checked-in CUDA Whisper sidecar: $cudaSidecar"
           }
 
-      - name: Package native app and installer
-        shell: pwsh
-        run: ./scripts/package-native.ps1 -SkipBuild
+          # Always rebuild via the script when possible. The script keeps an
+          # existing CUDA binary if CUDA toolkit is unavailable on the runner.
+          ./scripts/build-whisper-worker.ps1
 
-      - name: Check the extracted package
-        shell: pwsh
+          if (-not (Test-Path $vulkanSidecar)) {
+            throw "Vulkan Whisper sidecar missing after build: $vulkanSidecar"
+          }
+          if (-not (Test-Path $cudaSidecar)) {
+            Write-Warning "CUDA Whisper sidecar missing; CUDA local mode will be unavailable in this build."
+          }
+
+      - name: Test
         run: |
-          $archive = (Get-ChildItem -LiteralPath dist -Filter '*.zip').FullName
-          ./scripts/test-native-package.ps1 -Archive $archive
+          npm test
+          cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml
 
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: annotate-windows-x64
-          path: |
-            dist/*.zip
-            dist/*-setup.exe
-
-      - name: Create draft release
-        if: github.ref_type == 'tag'
-        shell: pwsh
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $archive = (Get-ChildItem -LiteralPath dist -Filter '*.zip').FullName
-          $installer = (Get-ChildItem -LiteralPath dist -Filter '*-setup.exe').FullName
-          gh release create $env:GITHUB_REF_NAME $installer $archive --draft --verify-tag --title "Annotate $env:GITHUB_REF_NAME" --notes 'Run the setup .exe to install or upgrade an existing installation; settings, dictionary and history are kept. Alternatively extract the portable ZIP and run annotate.exe, keeping the included DLL and Vulkan worker beside the app.'
-          if ($LASTEXITCODE -ne 0) { throw 'Draft release creation failed.' }
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Annotate v__VERSION__'
+          releaseBody: |
+            ## Annotate v__VERSION__
+
+            Push-to-talk voice transcription for Windows.
+
+            ### Installation
+            - **`.msi`** — Windows Installer (recommended)
+            - **`.exe`** — NSIS installer
+
+            > ⚠️ Windows SmartScreen may show a warning since the app is not code-signed yet. Click "More info" → "Run anyway" to proceed.
+          releaseDraft: true
+          prerelease: false

@@ -1,0 +1,5 @@
+[env]
+# Auto-detect GPU compute capability at build time — compiles CUDA kernels only for your card
+CMAKE_CUDA_ARCHITECTURES = "native"
+# Use custom MMQ kernels for quantized models (avoids cuBLAS for matrix math where possible)
+GGML_CUDA_FORCE_MMQ = "ON"

@@ -572,7 +572,7 @@ fn format_timestamp(seconds: f64) -> String {
 
 /// Generate subtitles from an audio/video file.
 ///
-/// This is the main entry point for native subtitle generation.
+/// This is the main entry point called by the Tauri command.
 /// The progress callback receives (stage, current_chunk, total_chunks, message).
 pub async fn generate_subtitles(
     file_path: &str,

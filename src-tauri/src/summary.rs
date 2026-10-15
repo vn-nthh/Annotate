@@ -50,7 +50,10 @@ pub async fn summarize_entries(
     summarize_text(api_key, &transcript).await
 }
 
-pub async fn summarize_text(api_key: &str, transcript: &str) -> Result<String, String> {
+pub async fn summarize_text(
+    api_key: &str,
+    transcript: &str,
+) -> Result<String, String> {
     let transcript = transcript.trim();
     if transcript.is_empty() {
         return Err("Subtitle transcript is empty".to_string());
@@ -79,10 +82,7 @@ pub async fn summarize_text(api_key: &str, transcript: &str) -> Result<String, S
 
     let response = HTTP_CLIENT
         .post(OPENROUTER_URL)
-        .header(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {}", api_key.trim()),
-        )
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {}", api_key.trim()))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .header("X-OpenRouter-Title", OPENROUTER_TITLE)
         .json(&request_body)

@@ -116,10 +116,9 @@ pub async fn transcribe_with_groq(
     let audio_bytes = base64::engine::general_purpose::STANDARD.decode(audio_base64)?;
 
     // Build multipart form — request verbose_json to get per-segment metadata
-    let wav = audio_bytes.starts_with(b"RIFF") && audio_bytes.get(8..12) == Some(b"WAVE");
     let audio_part = multipart::Part::bytes(audio_bytes)
-        .file_name(if wav { "audio.wav" } else { "audio.webm" })
-        .mime_str(if wav { "audio/wav" } else { "audio/webm" })?;
+        .file_name("audio.webm")
+        .mime_str("audio/webm")?;
 
     let mut form = multipart::Form::new()
         .part("file", audio_part)
