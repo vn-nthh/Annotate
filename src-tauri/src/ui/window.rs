@@ -9,8 +9,8 @@ use crate::native_onboarding::{self as setup, Onboarding};
 use gpui::{
     actions, anchored, deferred, div, img, point, prelude::*, px, size, AnimationExt, App, Bounds,
     Context, Corner, Div, Entity, FocusHandle, Focusable, Global, KeyBinding, KeyDownEvent,
-    MouseButton, ScrollHandle, SharedString, Stateful, TitlebarOptions, Window, WindowBounds,
-    WindowControlArea, WindowHandle, WindowKind, WindowOptions,
+    KeyUpEvent, MouseButton, ScrollHandle, SharedString, Stateful, TitlebarOptions, Window,
+    WindowBounds, WindowControlArea, WindowHandle, WindowKind, WindowOptions,
 };
 use std::{collections::HashMap, time::Instant};
 
@@ -61,6 +61,7 @@ pub struct MainWindow {
     api_key_mode: String,
     /// Unsaved API key edits for the engines not currently shown.
     api_drafts: HashMap<String, String>,
+    recorded_key: Option<String>,
     pub scroll: HashMap<&'static str, ScrollHandle>,
     pub drag: Option<(&'static str, f32, f32)>,
     /// The decoded profile photo, kept while the same bytes are in state.
@@ -68,7 +69,7 @@ pub struct MainWindow {
         std::cell::RefCell<Option<(std::sync::Arc<Vec<u8>>, std::sync::Arc<gpui::Image>)>>,
     root_focus: FocusHandle,
     /// Tray, Quit, and Cancel in the close prompt; focus stays among them.
-    modal_focus: [FocusHandle; 3],
+    pub(super) modal_focus: [FocusHandle; 3],
 }
 
 /// Opens an unfocused window at `origin` for reference captures.
@@ -276,6 +277,7 @@ impl MainWindow {
         let mut view = Self {
             api_key_mode: state.mode(),
             api_drafts: HashMap::new(),
+            recorded_key: None,
             state,
             theme,
             tab: if memory.tab.is_empty() {
@@ -823,6 +825,7 @@ impl MainWindow {
         let Some(id) = self.state.recording_hotkey.clone() else {
             return;
         };
+        self.recorded_key = Some(event.keystroke.key.clone());
         cx.stop_propagation();
         if event.keystroke.key == "escape" && !event.keystroke.modifiers.modified() {
             get().change(|s| s.recording_hotkey = None);
@@ -832,6 +835,14 @@ impl MainWindow {
             if let Err(e) = get().register_shortcut(&id, &combo) {
                 get().status(&e, true);
             }
+        }
+    }
+
+    fn recorded_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.recorded_key.as_deref() == Some(event.keystroke.key.as_str()) {
+            self.recorded_key = None;
+            // GPUI activates focused buttons on Enter/Space release.
+            cx.stop_propagation();
         }
     }
 
@@ -1469,6 +1480,11 @@ impl MainWindow {
             .rounded(px(RADIUS_MD))
             .hover(move |s| s.bg(t.hover).border_color(t.rule_hover))
             .when(focused.is_focused(window), move |f| f.border_color(t.faint))
+            .cursor(gpui::CursorStyle::IBeam)
+            .on_mouse_down(MouseButton::Left, move |_, window, _| {
+                window.focus(&focused);
+                window.prevent_default();
+            })
             .text_size(rem(0.9))
             .line_height(px(15.))
             .text_color(t.ink)
@@ -1495,6 +1511,7 @@ impl MainWindow {
                             ),
                         &t,
                     )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |view, _, window, cx| view.click(id, window, cx))),
                 )
             })
@@ -1619,6 +1636,7 @@ impl Render for MainWindow {
             .on_action(cx.listener(Self::focus_next))
             .on_action(cx.listener(Self::focus_previous))
             .capture_key_down(cx.listener(Self::record_key))
+            .capture_key_up(cx.listener(Self::recorded_key_up))
             .on_mouse_move(cx.listener(|view, event, _, cx| view.drag_scroll(event, cx)))
             .on_mouse_up(
                 MouseButton::Left,
@@ -1642,5 +1660,3 @@ impl Render for MainWindow {
             .when(self.modal, |root| root.child(self.modal(cx)))
     }
 }
-
-pub type Handle = WindowHandle<MainWindow>;

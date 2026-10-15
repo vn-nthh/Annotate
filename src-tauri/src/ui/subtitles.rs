@@ -384,6 +384,7 @@ impl MainWindow {
                             .text_color(t.ink)
                             .children(
                                 preview
+                                    .trim_end()
                                     .lines()
                                     .map(|line| {
                                         div()

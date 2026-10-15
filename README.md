@@ -22,10 +22,13 @@ Annotate pastes the transcription into the active application.
 - The local model download can be paused and resumes where it stopped.
 - API keys and Google refresh tokens stored in Windows Credential Manager.
 
-The app uses Win32, Direct2D, DirectWrite, Windows Composition, and WASAPI. The
-settings window releases its controls and rendering resources when closed to the
-tray. Whisper and grammar models load when requested. Browser transcription and
-CUDA are no longer available; older saved selections migrate to Groq and Vulkan.
+The interface is built with [GPUI](https://gpui.rs), Zed's GPU-accelerated UI
+framework, which renders through Direct3D 11 on Windows. Global shortcuts, the
+tray, synthetic input, and audio capture use Win32 and WASAPI behind a small
+platform layer, so the same UI can later run on macOS. The settings window is
+released when closed to the tray. Whisper and grammar models load when
+requested. Browser transcription and CUDA are no longer available; older saved
+selections migrate to Groq and Vulkan.
 
 ## Download
 
@@ -38,7 +41,7 @@ folder and run `annotate.exe`, keeping `DirectML.dll` and
 `whisper-worker-vulkan.exe` beside it. On first launch, the setup guide helps you
 pick an engine and get its model or API key; models also download from Settings.
 
-Requirements are Windows 10/11 x64 and the
+Requirements are Windows 10/11 x64, a Direct3D 11 capable graphics driver, and the
 [Microsoft Visual C++ 2015–2022 x64 Redistributable](https://aka.ms/vc14/vc_redist.x64.exe).
 Local Whisper additionally requires a GPU driver with Vulkan support. The Vulkan
 SDK is a build dependency only. The app does not require WebView2 or Node.js.
@@ -86,8 +89,13 @@ The migration's UI checks, offline inference test, and performance results are
 documented in [native validation](docs/native-validation.md).
 
 The executable, worker, and DLL are the runtime. The retained HTML/CSS and artwork
-are development references for visual comparisons. `scripts/capture-native-reference.py`
-uses them to regenerate embedded drawing data; it requires Playwright and Chromium.
+are the design reference. `annotate.exe --capture-ui <directory>` renders every
+screen state, in both themes, to PNGs off-screen, and
+`scripts/capture-native-reference.py --output <directory>` renders the HTML/CSS
+reference in Chromium to identically named PNGs for comparison (it requires
+Playwright and Chromium). The native capture also writes `checks.json` and
+eight representative 150% DPI scenes under `150/`. Render the matching reference
+with `--scale 1.5 --output <directory>/150`.
 The optional npm commands are shortcuts for the PowerShell build scripts. Browser
 assets and Python tools do not ship in the portable package.
 

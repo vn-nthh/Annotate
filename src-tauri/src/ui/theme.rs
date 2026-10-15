@@ -13,11 +13,9 @@ pub fn rem(value: f32) -> Pixels {
     px(value * 14.0)
 }
 
-pub const LIGHT: FontWeight = FontWeight::LIGHT;
 pub const NORMAL: FontWeight = FontWeight::NORMAL;
 pub const MEDIUM: FontWeight = FontWeight::MEDIUM;
 pub const SEMIBOLD: FontWeight = FontWeight::SEMIBOLD;
-pub const BOLD: FontWeight = FontWeight::BOLD;
 
 #[derive(Clone, Copy)]
 pub struct Theme {

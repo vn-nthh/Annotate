@@ -6,6 +6,7 @@ a Chromium browser. Reference screenshots live outside the checkout.
 """
 import argparse
 import base64
+import math
 import re
 from pathlib import Path
 from playwright.sync_api import sync_playwright
@@ -16,11 +17,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--browser', default=r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe')
+    parser.add_argument('--scale', type=float, default=1, help='Pixel scale; the logical viewport stays 520 x 580')
     args = parser.parse_args()
+    if not math.isfinite(args.scale) or args.scale <= 0:
+        parser.error('--scale must be finite and greater than zero')
     args.output.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=args.browser, headless=True)
-        page = browser.new_page(viewport={'width':520,'height':580}, device_scale_factor=1)
+        page = browser.new_page(viewport={'width':520,'height':580}, device_scale_factor=args.scale)
         html=(ROOT/'src'/'index.html').read_text(encoding='utf8')
         html=re.sub(r'<script\b[^>]*>[\s\S]*?</script>', '', html)
         html=re.sub(r'<link\b[^>]*>', '', html)
@@ -39,6 +43,7 @@ def main():
           el('history-list').innerHTML='<li class="history-empty">No transcriptions yet</li>';
           el('dict-list').innerHTML='<li class="dict-empty">No terms added yet</li>';
           el('mic-select').innerHTML='<option value="">System Default</option>';
+          show('setup-resume-btn',false);
           el('whisper-status-text').textContent='Model not downloaded (~600 MB)';show('whisper-download-btn',true);
           el('gec-status-text').textContent='Model not downloaded (~105 MB)';show('gec-download-btn',true);
           for(const key of ['ffmpeg','vad']){el('sub-dep-'+key+'-status').textContent='Not installed';show('sub-'+key+'-download-btn',true);}
@@ -84,6 +89,8 @@ def main():
             for summary in ('','Annotate transcribes speech using a native Windows interface. It supports cloud services and a local Vulkan model.'):
                 page.evaluate("s=>{document.getElementById('sub-summary').style.display=s?'':'none';document.getElementById('sub-summary-text').textContent=s;}",summary)
                 capture(f'{theme}:subtitling-'+('summary' if summary else 'result'))
+            page.evaluate("() => {document.getElementById('sub-summary-text').textContent='A long summary must not push the actions out of reach. '.repeat(14);document.getElementById('tab-subtitling').scrollTop=10000;}")
+            capture(f'{theme}:subtitling-long-summary')
             page.evaluate("() => {for(const id of ['sub-desc','sub-file-zone','sub-lang-group','sub-deps','sub-generate-btn'])document.getElementById(id).style.display='';for(const id of ['sub-result','sub-summary'])document.getElementById(id).style.display='none';}")
             for ready in (False,True):
                 page.evaluate("v=>{document.getElementById('sub-file-zone').classList.add('has-file');document.getElementById('sub-file-name').textContent='example.wav';document.getElementById('sub-deps').style.display=v?'none':'';document.getElementById('sub-generate-btn').disabled=!v;}",ready)

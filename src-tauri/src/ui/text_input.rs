@@ -135,10 +135,6 @@ impl TextInput {
         self.placeholder = placeholder.into();
     }
 
-    pub fn is_focused(&self, window: &Window) -> bool {
-        self.focus_handle.is_focused(window)
-    }
-
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             self.move_to(self.previous_boundary(self.cursor_offset()), cx);

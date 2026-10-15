@@ -2,6 +2,7 @@
 //! it through the functions below, which post to a channel the UI drains.
 mod assets;
 mod capture;
+mod checks;
 mod components;
 mod dictionary;
 mod home;

@@ -1,5 +1,96 @@
 # Native Windows validation
 
+## GPUI migration
+
+Validated on Windows 11 x64, 15 October 2026, on branch `feat/gpui-native`.
+The settings window, setup guide, controls, text input, and recording overlay
+are drawn by GPUI 0.2.2. Shortcuts, tray, synthetic input, dialogs, and overlay
+window styles are behind `src/platform/windows`. Windows remains the only
+implemented platform; macOS still needs its OS services, audio capture,
+permissions, model backend, and packaging.
+
+### Build and behavior
+
+- `cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml`
+  passes all 50 tests, including UTF-16 IME composition and masked Unicode
+  offset checks. `cargo fmt --check` and the release build with `-ReuseWorker`
+  pass without Rust warnings. The existing Vulkan worker is reused and its
+  protocol is verified by the build script.
+- The release `--capture-ui` harness renders 80 scenes at 100% and eight
+  representative light/dark scenes at 150%. The latter use a simulated
+  `WM_DPICHANGED` on the capture window, checking 520 x 580 logical and
+  780 x 870 physical pixels before restoring the original scale. This does
+  not test dragging between real monitors or changing desktop settings.
+- All 22 harness checks pass. They cover engine migration, titlebar close,
+  modal focus trapping and keyboard activation, dropdown keys, wheel input,
+  shortcut cancellation and key release, field padding hit testing, real
+  dictionary typing, edits saved on blur, setup gating/resume/completion,
+  simulated recording status, long summaries, and tray teardown/reopening.
+  Shortcut completion and recording status use fixtures; no real shortcut is
+  registered and no microphone or clipboard is used.
+- The capture exits nonzero on a failed render or check, rejects blank black
+  frames, and writes passed descriptions to `checks.json`. The old Win32
+  `controls.json` is no longer produced or required.
+- Chromium reference captures were regenerated at both scales. Light/dark
+  comparisons confirm the affected layouts and reachable subtitle actions.
+  Font rasterization, border rounding, and some font metrics still differ;
+  the captures are not pixel-identical. GPUI also omits backdrop blur and
+  letter spacing. The static setup reference retains its initial step count,
+  Back button, and hint while the app reflects the current setup step.
+
+Regenerate the screenshots outside the checkout:
+
+```powershell
+<path to annotate.exe> --capture-ui <native-directory>
+python scripts/capture-native-reference.py --output <reference-directory>
+python scripts/capture-native-reference.py --scale 1.5 --output <reference-directory>/150
+```
+
+### Performance
+
+[`gpui-benchmark.json`](gpui-benchmark.json) records three measured runs after
+warmup on a Ryzen 5 5600G. Median process creation to first view render was
+526 ms (503 ms from the app's own timing origin). The GPUI timing hook runs
+at entry into the first render, before GPU presentation; it is not a measure
+of a completed frame on the display. The benchmark metadata states this.
+
+Median open-window working set was 59.33 MiB, with 123.61 MiB private bytes.
+In the tray it was 59.30 MiB / 76.41 MiB, with one process in both phases.
+Closing to the tray removes the settings window and its views; GPUI's shared
+GPU device remains resident. Models are not loaded during the benchmark.
+The historical Win32/Tauri measurements below remain unchanged in
+[`native-benchmark.json`](native-benchmark.json).
+
+### Offline inference and package
+
+`scripts/test-vulkan-transcription.ps1` passed using the existing local model
+and synthetic SAPI speech, without opening a microphone. The transcript
+matched both sentences; valid segments covered 0-2.54 and 2.54-6.86 seconds.
+Logs confirmed Vulkan0 on an NVIDIA RTX 3060 Ti. Loading took 1.337 seconds,
+transcription 0.603 seconds, and segmented transcription 0.542 seconds. The
+worker exited with code 0.
+
+`scripts/package-native.ps1 -SkipBuild` built the portable ZIP and NSIS setup.
+`scripts/test-native-package.ps1` then extracted the ZIP outside the checkout,
+rendered all 88 images, passed all 22 checks, verified the isolated Vulkan
+worker, and rejected browser assets, raw fonts, CUDA, and missing runtime files.
+The installer was built but installation and uninstallation were not run.
+
+Release executable SHA-256:
+`273A20B05FE6FE3AC60431113245987CBEC286F601E0BD08DDA1AE1055E27DE4`.
+Vulkan worker SHA-256:
+`939238541825C28A9DC23025C4D270D312CE29A104D55C3E99428BB10B13625F`.
+Portable ZIP SHA-256:
+`5372236BBD4278B3E31CBF41CFF9C7A85B11CB1DC8470731D4DE66D2761E9F96`.
+Setup executable SHA-256:
+`49CFC01072164A85EE9D0A3F8C01036A5544DF88E293E9F1E2A9AAA9BD8EBE4A`.
+
+Live Groq/Azure/OpenRouter calls, real Google sign-in/sync, live microphone
+input and paste into another app, a real IME session, and macOS were not
+exercised by this validation.
+
+## Historical Win32 validation
+
 Validated on Windows 11 x64, 12 October 2026, on branch
 `codex/native-runtime-ui-parity`.
 
@@ -8,7 +99,7 @@ uses WASAPI and the overlay uses Windows Composition. Closing to the tray
 destroys the settings window and its drawing resources. The package contains
 no browser runtime or frontend assets. Local Whisper uses the Vulkan worker.
 
-## Behavior and UI
+### Behavior and UI
 
 - All 34 Rust tests pass, covering settings rollback, Unicode output, audio
   capture formatting and cancellation, shortcut parsing, OAuth/PKCE, sync races,
@@ -52,7 +143,7 @@ the scrolling viewport filter, which previously removed both button HWNDs
 while leaving their icons painted. All 58 captured screens remain
 pixel-identical to the native migration build before these interaction fixes.
 
-## Offline transcription
+### Offline transcription
 
 A clean worker build passed. `scripts/test-vulkan-transcription.ps1` then
 transcribed synthetic offline SAPI speech through the existing
@@ -65,7 +156,7 @@ with code 0.
 Tested worker SHA-256:
 `F5C44A5A22EEEB8870D481E627891842F26C7E8618E620AF39B744C65DEBAC26`.
 
-## Performance and package
+### Performance and package
 
 The native migration baseline's measurements are recorded in
 [`native-benchmark.json`](native-benchmark.json). Median working set was
@@ -102,7 +193,7 @@ Live Groq/Azure/OpenRouter requests, Google sign-in/sync against a real account,
 and live microphone recording were not exercised. Their preserved backend
 flows and relevant deterministic behavior were checked in code and Rust tests.
 
-## Setup guide and resumable model download
+### Setup guide and resumable model download
 
 Validated on Windows 11 x64, 12 October 2026, for v0.3.0.
 

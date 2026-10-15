@@ -175,7 +175,7 @@ $report = [pscustomobject]@{
   operatingSystem = [Environment]::OSVersion.VersionString
   processor = (Get-CimInstance Win32_Processor | Select-Object -First 1 -ExpandProperty Name)
   executables = @($applications | ForEach-Object { [pscustomobject]@{ name = $_.Name; path = $_.Path; sha256 = (Get-FileHash -LiteralPath $_.Path -Algorithm SHA256).Hash } })
-  conditions = 'Warm filesystem cache; reused isolated WebView profile; empty Home/default settings; exact offline Satoshi fonts; no credentials, microphone, models, hotkeys or network bootstrap; Tauri capture-device override watcher disabled. Ready means completed native render or DOM + fonts + two animation frames. Each memory phase waits 2s then takes 5 process-tree samples. Working set sums include shared pages; private bytes count committed private memory, not physical RAM.'
+  conditions = 'Warm filesystem cache; empty Home/default settings; exact offline Satoshi fonts; no credentials, microphone, models, hotkeys or network bootstrap. GPUI ready means entry into the first view render, before GPU presentation; the optional isolated Tauri baseline uses DOM + fonts + two animation frames. Each memory phase waits 2s then takes 5 process-tree samples. Working set sums include shared pages; private bytes count committed private memory, not physical RAM.'
   summary = $summary; runs = $runsData
 }
 $reportPath = Join-Path $outputPath 'results.json'

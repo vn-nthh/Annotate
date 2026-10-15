@@ -1,7 +1,7 @@
 //! `--capture-ui <dir>`: renders every screen with fixture data and saves PNGs
 //! named like the Win32 reference captures, for visual comparison. Uses an
 //! isolated profile and never reads credentials or contacts APIs.
-use super::window::MainWindow;
+use super::window::{MainWindow, HEIGHT, WIDTH};
 use crate::native_core::{get, State};
 use crate::native_onboarding::{self as setup, Onboarding};
 use gpui::{point, px, App, AsyncApp, WindowHandle};
@@ -221,13 +221,20 @@ pub fn run(directory: PathBuf) -> Result<(), String> {
         cx.spawn(async move |cx| {
             if let Err(error) = capture_all(handle, &directory, cx).await {
                 eprintln!("Native UI capture: {error}");
+                FAILED.store(true, std::sync::atomic::Ordering::Release);
             }
             let _ = cx.update(|cx| cx.quit());
         })
         .detach();
         Ok(())
-    })
+    })?;
+    if FAILED.load(std::sync::atomic::Ordering::Acquire) {
+        return Err("Capture or interaction checks failed".into());
+    }
+    Ok(())
 }
+
+static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 async fn capture_all(
     handle: WindowHandle<MainWindow>,
@@ -235,27 +242,110 @@ async fn capture_all(
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
     let initial = get().snapshot();
-    for scene in scenes(&initial) {
-        let path = directory.join(format!("{}.png", scene.name));
+    let scenes = scenes(&initial);
+    let long_summary = scenes
+        .iter()
+        .find(|scene| scene.name == "light-subtitling-long-summary")
+        .map(|scene| scene.state.clone())
+        .ok_or("Missing long summary scene")?;
+    let original_dpi = handle
+        .update(cx, |_, window, _| {
+            (window.scale_factor() * 96.).round() as u32
+        })
+        .map_err(|e| e.to_string())?;
+    if original_dpi != 96 {
+        set_dpi(handle, 96, cx).await?;
+    }
+    let captures = async {
+        for scene in &scenes {
+            capture_scene(handle, scene, directory, cx).await?;
+        }
+        let scaled = directory.join("150");
+        std::fs::create_dir_all(&scaled).map_err(|e| e.to_string())?;
+        set_dpi(handle, 144, cx).await?;
+        for scene in scenes.iter().filter(|scene| {
+            [
+                "dictionary-filled",
+                "settings-bottom",
+                "modal",
+                "subtitling-long-summary",
+            ]
+            .iter()
+            .any(|name| scene.name.ends_with(name))
+        }) {
+            capture_scene(handle, scene, &scaled, cx).await?;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+    let restored = set_dpi(handle, original_dpi, cx).await;
+    captures?;
+    restored?;
+    let mut checks = super::checks::run(handle, long_summary, cx).await?;
+    checks.insert(0, "Simulated WM_DPICHANGED renders at 150% with a 520x580 logical / 780x870 pixel client, then restores the original DPI");
+    std::fs::write(
+        directory.join("checks.json"),
+        serde_json::to_vec_pretty(&checks).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+async fn capture_scene(
+    handle: WindowHandle<MainWindow>,
+    scene: &Scene,
+    directory: &std::path::Path,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    handle
+        .update(cx, |view, window, cx| {
+            view.show_scene(scene.state.clone(), scene.tab, scene.modal, window, cx)
+        })
+        .map_err(|e| e.to_string())?;
+    settle(cx).await;
+    if let Some(id) = scene.bottom {
         handle
-            .update(cx, |view, window, cx| {
-                view.show_scene(scene.state, scene.tab, scene.modal, window, cx)
-            })
+            .update(cx, |view, _, cx| view.scroll_to_bottom(id, cx))
             .map_err(|e| e.to_string())?;
         settle(cx).await;
-        if let Some(id) = scene.bottom {
-            handle
-                .update(cx, |view, _, cx| view.scroll_to_bottom(id, cx))
-                .map_err(|e| e.to_string())?;
-            settle(cx).await;
-        }
-        handle
-            .update(cx, |_, window, _| {
-                crate::platform::capture_window(window, &path)
-            })
-            .map_err(|e| e.to_string())??;
     }
-    Ok(())
+    let path = directory.join(format!("{}.png", scene.name));
+    handle
+        .update(cx, |_, window, _| {
+            crate::platform::capture_window(window, &path)
+        })
+        .map_err(|e| e.to_string())?
+}
+
+async fn set_dpi(
+    handle: WindowHandle<MainWindow>,
+    dpi: u32,
+    cx: &mut AsyncApp,
+) -> Result<(), String> {
+    let owner = handle
+        .update(cx, |_, window, _| crate::platform::dialog_owner(window))
+        .map_err(|e| e.to_string())?
+        .ok_or("No capture window handle")?;
+    crate::app::spawn_blocking(move || crate::platform::set_capture_dpi(owner, dpi, WIDTH, HEIGHT))
+        .await
+        .map_err(|e| e.to_string())??;
+    settle(cx).await;
+    handle
+        .update(cx, |_, window, _| {
+            let scale = window.scale_factor();
+            let size = window.viewport_size();
+            if (scale - dpi as f32 / 96.).abs() > 0.001
+                || (f32::from(size.width) - WIDTH).abs() > 1.
+                || (f32::from(size.height) - HEIGHT).abs() > 1.
+            {
+                return Err(format!(
+                    "GPUI DPI capture has scale {scale} and size {size:?}, expected {} and {WIDTH}x{HEIGHT}",
+                    dpi as f32 / 96.
+                ));
+            }
+            Ok(())
+        })
+        .map_err(|e| e.to_string())?
 }
 
 /// Two frames: one to lay out (scroll handles learn their size), one to paint.

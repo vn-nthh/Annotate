@@ -243,6 +243,9 @@ pub fn capture_window(window: &impl HasWindowHandle, path: &std::path::Path) -> 
         if !printed {
             return Err("PrintWindow failed".into());
         }
+        if rgba.chunks_exact(4).all(|p| p[..3] == [0, 0, 0]) {
+            return Err("The captured window is blank".into());
+        }
         let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
         let mut encoder =
             png::Encoder::new(std::io::BufWriter::new(file), width as u32, height as u32);
@@ -269,6 +272,114 @@ pub fn move_offscreen(window: &impl HasWindowHandle) {
                 0,
                 SWP_NOACTIVATE | SWP_NOSIZE,
             );
+        }
+    }
+}
+
+/// Exercises GPUI's DPI-change path for reference captures without changing the
+/// desktop scale. Call off the UI thread so synchronous WM_SIZE reaches GPUI
+/// while its app is not borrowed. SendMessage keeps the suggested RECT alive.
+pub fn set_capture_dpi(
+    owner: DialogOwner,
+    dpi: u32,
+    width: f32,
+    height: f32,
+) -> Result<(), String> {
+    use windows::Win32::{
+        Foundation::{LPARAM, RECT, WPARAM},
+        UI::WindowsAndMessaging::{GetClientRect, GetWindowRect, SendMessageW, WM_DPICHANGED},
+    };
+    let hwnd = HWND(owner.0 as *mut _);
+    let scale = dpi as f32 / 96.;
+    let (width, height) = (
+        (width * scale).round() as i32,
+        (height * scale).round() as i32,
+    );
+    unsafe {
+        let mut outer = RECT::default();
+        let mut client = RECT::default();
+        GetWindowRect(hwnd, &mut outer).map_err(|e| e.to_string())?;
+        GetClientRect(hwnd, &mut client).map_err(|e| e.to_string())?;
+        outer.right += width - (client.right - client.left);
+        outer.bottom += height - (client.bottom - client.top);
+        SendMessageW(
+            hwnd,
+            WM_DPICHANGED,
+            Some(WPARAM((dpi | (dpi << 16)) as usize)),
+            Some(LPARAM((&outer as *const RECT) as isize)),
+        );
+        GetClientRect(hwnd, &mut client).map_err(|e| e.to_string())?;
+        let actual = (client.right - client.left, client.bottom - client.top);
+        if actual != (width, height) {
+            return Err(format!(
+                "DPI capture client is {}x{}, expected {width}x{height}",
+                actual.0, actual.1
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Posts a left click at a logical client position (UI interaction checks).
+pub fn post_click(window: &impl HasWindowHandle, x: f32, y: f32) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    };
+    if let Some(hwnd) = hwnd(window) {
+        unsafe {
+            let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
+            let (x, y) = ((x * scale) as isize, (y * scale) as isize);
+            let point = LPARAM((x & 0xffff) | ((y & 0xffff) << 16));
+            let _ = PostMessageW(Some(hwnd), WM_MOUSEMOVE, WPARAM(0), point);
+            let _ = PostMessageW(Some(hwnd), WM_LBUTTONDOWN, WPARAM(1), point);
+            let _ = PostMessageW(Some(hwnd), WM_LBUTTONUP, WPARAM(0), point);
+        }
+    }
+}
+
+/// Posts a mouse wheel turn at a logical client position (UI interaction checks).
+pub fn post_wheel(window: &impl HasWindowHandle, x: f32, y: f32, notches: i16) {
+    use windows::Win32::{
+        Foundation::{LPARAM, POINT, WPARAM},
+        Graphics::Gdi::ClientToScreen,
+        UI::{HiDpi::GetDpiForWindow, WindowsAndMessaging::*},
+    };
+    if let Some(hwnd) = hwnd(window) {
+        unsafe {
+            let scale = GetDpiForWindow(hwnd).max(96) as f32 / 96.0;
+            let mut point = POINT {
+                x: (x * scale) as i32,
+                y: (y * scale) as i32,
+            };
+            let _ = ClientToScreen(hwnd, &mut point);
+            let delta = (notches as i32 * 120) as u16 as usize;
+            let position =
+                LPARAM((point.x as i16 as u16 as isize) | ((point.y as i16 as u16 as isize) << 16));
+            let _ = PostMessageW(Some(hwnd), WM_MOUSEWHEEL, WPARAM(delta << 16), position);
+        }
+    }
+}
+
+/// GPUI's public keystroke helper sends only key-down; buttons click on key-up.
+pub fn post_key_up(window: &impl HasWindowHandle, key: &str) {
+    use windows::Win32::{
+        Foundation::{LPARAM, WPARAM},
+        UI::WindowsAndMessaging::{PostMessageW, WM_KEYUP},
+    };
+    let key = match key {
+        "enter" => 0x0d,
+        "space" => 0x20,
+        "escape" => 0x1b,
+        "tab" => 0x09,
+        "up" => 0x26,
+        "down" => 0x28,
+        key if key.len() == 1 && key.is_ascii() => key.as_bytes()[0].to_ascii_uppercase() as usize,
+        _ => return,
+    };
+    if let Some(hwnd) = hwnd(window) {
+        unsafe {
+            let _ = PostMessageW(Some(hwnd), WM_KEYUP, WPARAM(key), LPARAM(0xc0000001));
         }
     }
 }
