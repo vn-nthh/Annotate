@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory(prefix='annotate-macos-check-') as temporary:
         assert subprocess.check_output(['lipo', '-archs', str(binary)], text=True).strip() == 'arm64'
     result = subprocess.check_output([str(binaries/'annotate'), '--version'], text=True).strip()
     assert result == info['CFBundleGetInfoString']
+    subprocess.run([str(binaries/'annotate'), '--check-platform', str(directory/'profile')], check=True, timeout=20)
     worker = subprocess.run([str(binaries/'whisper-worker-metal')], input='{"cmd":"backend"}\n{"cmd":"quit"}\n', capture_output=True, text=True, timeout=15, check=True)
     assert json.loads(worker.stdout.splitlines()[0]) == {'ok': True, 'backend': 'metal'}
     parent_code = '''
@@ -54,4 +55,4 @@ time.sleep(30)
             parent.wait(timeout=5)
     forbidden = {'.exe', '.dll', '.html', '.js', '.otf', '.ttf', '.bin', '.onnx'}
     assert not [p for p in app.rglob('*') if p.is_file() and p.suffix.lower() in forbidden]
-    print('Verified arm64 bundle, version, microphone declaration, ad-hoc signature, native CLI startup, Metal worker protocol, and busy-worker termination after parent exit. No GUI, microphone, credentials, or keyboard input were used.')
+    print('Verified arm64 bundle, version, microphone declaration, ad-hoc signature, native CLI startup, AppKit menu-bar lifecycle, Carbon shortcut registration/removal, Metal worker protocol, and busy-worker termination after parent exit. No GPUI rendering, microphone, credentials, or keyboard input were used.')

@@ -66,7 +66,8 @@ for clipboard operations. The menu-bar icon reopens settings or quits the app;
 Command+Q also quits and Command+, opens Settings.
 
 CI checks the arm64 build, Rust tests, app bundle, code signature, command-line
-startup, and Metal worker protocol/lifetime. The hosted runner has no Metal
+startup, menu-bar lifecycle, shortcut registration/removal, and Metal worker
+protocol/lifetime. The hosted runner has no Metal
 device, so it cannot render GPUI or validate GPU inference. Microphone, hotkeys,
 paste, Keychain prompts, real Google sign-in, and multi-monitor behavior still
 need hands-on testing on a Mac. This is a preview, not a stable macOS release.

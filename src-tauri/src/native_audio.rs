@@ -32,6 +32,7 @@ pub fn wav(samples: &[i16]) -> Result<Vec<u8>, String> {
 }
 
 /// Keeps the fractional source position across CoreAudio callback boundaries.
+// ponytail: linear interpolation; use AudioConverter if Mac speech tests show aliasing.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) struct Resampler {
     pub samples: Vec<i16>,

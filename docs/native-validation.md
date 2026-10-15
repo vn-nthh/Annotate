@@ -192,8 +192,11 @@ The app does not import a Windows WebView2 profile on macOS.
 The Apple Silicon Preview workflow builds on `macos-14` arm64, runs Rust tests,
 packages the app and checks an extracted ZIP. It verifies both Mach-O binaries
 are arm64, the app/installer metadata, microphone usage description, ad-hoc
-signature, command-line startup, Metal worker protocol, and parent-exit
-termination. The ZIP and DMG contain the app, worker, required non-system
+signature, command-line startup, AppKit menu-bar creation/removal, Carbon
+shortcut registration/removal, Metal worker protocol, and parent-exit
+termination. The native service probe uses an isolated profile and registers
+an unused shortcut; it does not send or observe a physical key press.
+The ZIP and DMG contain the app, worker, required non-system
 dylibs, icon, and font license; no browser runtime, raw fonts, or models.
 
 The runner's Metal probe returns `unavailable`. No rendered GPUI, GPU inference,

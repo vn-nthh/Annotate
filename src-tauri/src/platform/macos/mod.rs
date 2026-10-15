@@ -45,6 +45,27 @@ pub fn stop_services() {
     services::stop();
 }
 
+/// Exercises AppKit/Carbon startup without constructing GPUI's Metal renderer.
+/// The caller supplies an isolated profile and disables normal bootstrap.
+pub fn check_services(directory: &std::path::Path) -> Result<(), String> {
+    assert!(std::env::var_os("ANNOTATE_UI_TEST").is_some());
+    on_main(|| unsafe {
+        let app: id = msg_send![class!(NSApplication), sharedApplication];
+        let _: BOOL = msg_send![app, setActivationPolicy: 1isize];
+        let _: () = msg_send![app, finishLaunching];
+    });
+    let instance =
+        acquire_instance(directory)?.ok_or("The service probe profile is already in use")?;
+    start_services(&instance)?;
+    let result = register_shortcut(0, "Ctrl+Alt+F20").and_then(|_| register_shortcut(0, ""));
+    stop_services();
+    result?;
+    if format_time(0).is_empty() {
+        return Err("The native date formatter returned no text".into());
+    }
+    Ok(())
+}
+
 unsafe fn ns_window(window: &impl HasWindowHandle) -> Option<id> {
     match window.window_handle().ok()?.as_raw() {
         RawWindowHandle::AppKit(handle) => {

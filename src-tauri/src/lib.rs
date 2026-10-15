@@ -443,6 +443,24 @@ pub fn run() {
         println!("Annotate {}", env!("CARGO_PKG_VERSION"));
         return;
     }
+    #[cfg(target_os = "macos")]
+    if args.get(1).is_some_and(|s| s == "--check-platform") {
+        let Some(directory) = args.get(2) else {
+            eprintln!("--check-platform requires an isolated profile directory");
+            std::process::exit(1);
+        };
+        std::env::set_var("ANNOTATE_UI_TEST", "1");
+        std::env::set_var("ANNOTATE_DATA_DIR", directory);
+        let result = app::initialize_runtime()
+            .and_then(|_| native_core::initialize(AppHandle))
+            .and_then(|_| platform::check_services(std::path::Path::new(directory)));
+        if let Err(error) = result {
+            eprintln!("macOS platform check: {error}");
+            std::process::exit(1);
+        }
+        println!("AppKit menu-bar lifecycle and Carbon shortcut registration/removal passed without GPUI rendering.");
+        return;
+    }
     if args.get(1).is_some_and(|s| s == "--capture-ui") {
         let Some(directory) = args.get(2) else {
             eprintln!("--capture-ui requires an output directory");
