@@ -84,6 +84,7 @@ pub async fn ensure_ffmpeg(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = ffmpeg_path(data_dir);
     if is_ffmpeg_available(data_dir) {
+        crate::platform::mark_executable(&path)?;
         log::info!("[Subtitle] FFmpeg already available at {:?}", path);
         return Ok(());
     }
@@ -98,6 +99,8 @@ pub async fn ensure_ffmpeg(
     let downloaded =
         crate::download::download_verified(&client, FFMPEG_URL, &path, FFMPEG_SHA256, progress_cb)
             .await?;
+
+    crate::platform::mark_executable(&path)?;
 
     log::info!("[Subtitle] FFmpeg downloaded: {} bytes", downloaded);
     Ok(())

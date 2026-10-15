@@ -372,7 +372,7 @@ pub fn read_legacy(directory: &Path) -> Result<(Value, Value), String> {
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "windows"))]
 mod tests {
     use super::*;
     use serde_json::json;

@@ -1,7 +1,9 @@
 //! GPUI front end. Everything here runs on the main thread; other threads reach
 //! it through the functions below, which post to a channel the UI drains.
 mod assets;
+#[cfg(target_os = "windows")]
 mod capture;
+#[cfg(target_os = "windows")]
 mod checks;
 mod components;
 mod dictionary;
@@ -93,7 +95,15 @@ pub fn run(start: impl FnOnce() -> Result<(), String> + 'static) -> Result<(), S
 }
 
 pub fn capture(directory: std::path::PathBuf) -> Result<(), String> {
-    capture::run(directory)
+    #[cfg(target_os = "windows")]
+    {
+        capture::run(directory)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = directory;
+        Err("The image-capture harness currently requires Windows. macOS preview checks cover the build and bundle, not rendered UI.".into())
+    }
 }
 
 fn run_with(start: impl FnOnce(&mut App) -> Result<(), String> + 'static) -> Result<(), String> {

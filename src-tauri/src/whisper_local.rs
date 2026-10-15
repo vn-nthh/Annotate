@@ -30,24 +30,40 @@ const MODEL_VERIFIED_MARKER: &str = "ggml-large-v3-turbo-q5_0.bin.verified";
 /// GPU acceleration backend for local Whisper inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccelerationBackend {
+    #[cfg(not(target_os = "macos"))]
     Vulkan,
+    #[cfg(target_os = "macos")]
+    Metal,
 }
 
 impl AccelerationBackend {
     pub fn as_str(self) -> &'static str {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Self::Vulkan => "vulkan",
+            #[cfg(target_os = "macos")]
+            Self::Metal => "metal",
         }
     }
 
     pub fn parse(value: Option<&str>) -> Self {
         let _ = value; // Includes older persisted acceleration selections.
-        Self::Vulkan
+        #[cfg(not(target_os = "macos"))]
+        {
+            Self::Vulkan
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Self::Metal
+        }
     }
 
     fn worker_bin_stem(self) -> &'static str {
         match self {
+            #[cfg(not(target_os = "macos"))]
             Self::Vulkan => "whisper-worker-vulkan",
+            #[cfg(target_os = "macos")]
+            Self::Metal => "whisper-worker-metal",
         }
     }
 }
@@ -452,34 +468,31 @@ mod tests {
 
     #[test]
     fn parses_acceleration_backend() {
-        assert_eq!(
-            AccelerationBackend::parse(Some("vulkan")),
-            AccelerationBackend::Vulkan
-        );
-        assert_eq!(
-            AccelerationBackend::parse(Some("vk")),
-            AccelerationBackend::Vulkan
-        );
-        assert_eq!(
-            AccelerationBackend::parse(Some("cuda")),
-            AccelerationBackend::Vulkan
-        );
-        assert_eq!(
-            AccelerationBackend::parse(None),
-            AccelerationBackend::Vulkan
-        );
-        assert_eq!(
-            AccelerationBackend::parse(Some("unknown")),
-            AccelerationBackend::Vulkan
-        );
+        let expected = if cfg!(target_os = "macos") {
+            "metal"
+        } else {
+            "vulkan"
+        };
+        for saved in [
+            None,
+            Some("vulkan"),
+            Some("metal"),
+            Some("vk"),
+            Some("cuda"),
+            Some("unknown"),
+        ] {
+            assert_eq!(AccelerationBackend::parse(saved).as_str(), expected);
+        }
     }
 
     #[test]
     fn worker_stems_match_external_bin_names() {
-        assert_eq!(
-            AccelerationBackend::Vulkan.worker_bin_stem(),
+        let expected = if cfg!(target_os = "macos") {
+            "whisper-worker-metal"
+        } else {
             "whisper-worker-vulkan"
-        );
+        };
+        assert_eq!(AccelerationBackend::parse(None).worker_bin_stem(), expected);
     }
 
     #[test]
@@ -498,7 +511,7 @@ mod tests {
                 child,
                 stdin,
                 stdout_reader,
-                backend: AccelerationBackend::Vulkan,
+                backend: AccelerationBackend::parse(None),
                 _job: job,
             };
             super::mark_loaded();

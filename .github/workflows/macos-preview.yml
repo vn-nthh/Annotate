@@ -12,6 +12,9 @@ concurrency:
 jobs:
   build-macos:
     runs-on: macos-14
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/src-tauri/target
+      MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v4
       - name: Check Apple silicon environment
@@ -20,3 +23,34 @@ jobs:
           test "$(uname -m)" = arm64
           xcodebuild -version
           swift -e 'import Metal; print("Metal device: \(MTLCreateSystemDefaultDevice()?.name ?? "unavailable")")'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+          cache-on-failure: true
+      - name: Configure Google OAuth client
+        env:
+          GOOGLE_OAUTH_CLIENT_ID: ${{ vars.GOOGLE_OAUTH_CLIENT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          client_id = os.environ.get('GOOGLE_OAUTH_CLIENT_ID', '')
+          if not client_id:
+              raise RuntimeError('GOOGLE_OAUTH_CLIENT_ID is required for release builds')
+          Path('src/oauth.config.json').write_text(json.dumps({'client_id': client_id}))
+          PY
+      - name: Build Apple silicon app and Metal worker
+        run: bash scripts/build-macos.sh
+      - name: Test native behavior
+        run: cargo test --package annotate --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Package and check Apple silicon bundle
+        run: |
+          python3 scripts/package-macos.py
+          python3 scripts/test-macos-package.py dist/Annotate-*-macos-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: annotate-macos-arm64
+          path: |
+            dist/*-macos-arm64.zip
+            dist/*-macos-arm64.dmg
