@@ -1,0 +1,22 @@
+name: Apple Silicon Preview
+
+on:
+  push:
+    branches: [feat/macos-native]
+  workflow_dispatch:
+
+concurrency:
+  group: macos-preview-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Apple silicon environment
+        shell: bash
+        run: |
+          test "$(uname -m)" = arm64
+          xcodebuild -version
+          swift -e 'import Metal; print("Metal device: \(MTLCreateSystemDefaultDevice()?.name ?? "unavailable")")'
